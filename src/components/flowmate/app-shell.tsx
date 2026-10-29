@@ -72,6 +72,8 @@ function initials(name: string) {
 function SidebarNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: () => void }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const profileQuery = useProfile();
+  const signOut = useSignOut();
+
 
   return (
     <div className="flex h-full flex-col bg-sidebar">
