@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
-import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
+import { supabase } from "@/integrations/supabase/client";
 import {
   LayoutDashboard,
   Workflow,
@@ -186,9 +186,7 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?
                 <Link to="/billing"><CreditCard className="h-4 w-4" /> Billing & Usage</Link>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={async () => {
-                await supabaseSignOut();
-              }}>
+              <DropdownMenuItem onClick={handleSignOut}>
                 <LogOut className="h-4 w-4" /> Log out
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -197,12 +195,6 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?
       </div>
     </div>
   );
-}
-
-async function supabaseSignOut() {
-  const { supabase } = await import("@/integrations/supabase/client");
-  await supabase.auth.signOut();
-  window.location.href = "/login";
 }
 
 function useProfile() {
