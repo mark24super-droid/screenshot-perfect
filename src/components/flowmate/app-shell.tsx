@@ -186,7 +186,7 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?
                 <Link to="/billing"><CreditCard className="h-4 w-4" /> Billing & Usage</Link>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleSignOut}>
+              <DropdownMenuItem onClick={signOut}>
                 <LogOut className="h-4 w-4" /> Log out
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -197,16 +197,16 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?
   );
 }
 
-async function handleSignOut() {
-  await queryClientCancel();
-  await supabase.auth.signOut();
-  window.location.replace("/login");
-}
-
-// Stop in-flight queries before sign-out so protected data isn't refetched
-// against a cleared session, then drop the cache entirely.
-function queryClientCancel() {
-  return Promise.resolve();
+// Sign-out hygiene: stop in-flight queries, drop the cache, clear the
+// session, then replace history so Back can't restore protected data.
+function useSignOut() {
+  const queryClient = useQueryClient();
+  return async () => {
+    await queryClient.cancelQueries();
+    queryClient.clear();
+    await supabase.auth.signOut();
+    window.location.replace("/login");
+  };
 }
 
 function useProfile() {
