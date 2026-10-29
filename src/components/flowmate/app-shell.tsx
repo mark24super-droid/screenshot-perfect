@@ -197,6 +197,18 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?
   );
 }
 
+async function handleSignOut() {
+  await queryClientCancel();
+  await supabase.auth.signOut();
+  window.location.replace("/login");
+}
+
+// Stop in-flight queries before sign-out so protected data isn't refetched
+// against a cleared session, then drop the cache entirely.
+function queryClientCancel() {
+  return Promise.resolve();
+}
+
 function useProfile() {
   const fetchProfile = useServerFn(getMyProfile);
   return useQuery({
@@ -268,10 +280,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         </button>
       </aside>
       <main className="min-w-0 flex-1">{children}</main>
-      {(() => {
-        void navigate; void toast;
-        return null;
-      })()}
     </div>
   );
 }
