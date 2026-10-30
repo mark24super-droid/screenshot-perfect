@@ -263,22 +263,16 @@ Rules:
         ),
         missingConfiguration,
         explanation: parsed.explanation ?? "",
-        clarification: parsed.claimedClarificationSafe(parsed),
+        clarification: clarificationOf(parsed),
       },
     };
   });
-
-// Keep the returned shape literal-typed: clarification is optional/nullable.
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
-  export {};
-}
 
 interface ParsedPlanShape {
   clarification?: string;
 }
 
-function claimedClarificationSafe(parsed: ParsedPlanShape): string | null {
+function clarificationOf(parsed: ParsedPlanShape): string | null {
   const c = parsed.clarification;
   return typeof c === "string" && c.trim().length > 0 ? c.trim().slice(0, 300) : null;
 }
