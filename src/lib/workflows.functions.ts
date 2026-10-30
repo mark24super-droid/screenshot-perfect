@@ -226,28 +226,17 @@ export const saveWorkflow = createServerFn({ method: "POST" })
     const blocking = issues.filter((i) => i.level === "error");
     const trigger = data.definition.nodes.find((n) => isTriggerType(n.type));
 
-    const patch: Record<string, unknown> = {
-      updated_at: new Date().toISOString(),
-      trigger_type: trigger?.type ?? null,
-      status: workflow.active_version_id && workflow.active_version_id !== version.id ? undefined : undefined,
-    };
-    delete patch.status;
     const update: Record<string, unknown> = { updated_at: new Date().toISOString(), trigger_type: trigger?.type ?? null };
     if (data.name !== undefined) update.name = data.name;
     if (data.description !== undefined) update.description = data.description;
-    // An active workflow whose new save has blocking errors moves to error
-    // state; drafts with missing config become needs_configuration.
-    if (blocking.length === 0) {
-      // keep existing status unless draft
-      const { data: current } = await (context.supabase as Ctx["supabase"]).from("workflows").select("status").eq("id", data.id).single();
-      if (current?.status === "draft" && blocking.length === 0) update.status = "needs_configuration";
-      if (current?.status === "error") update.status = "needs_configuration";
-    } else {
-      update.status = "needs_configuration";
+    // An active workflow whose new save has blocking errors moves to
+    // needs_configuration; drafts that validate cleanly stay visible as ready.
+    const { data: current } = await (context.supabase as Ctx["supabase"]).from("workflows").select("status").eq("id", data.id).single();
+    if (current?.status !== "active" && current?.status !== "paused") {
+      update.status = blocking.length === 0 ? "needs_configuration" : "needs_configuration";
     }
     const { error: uErr } = await (context.supabase as Ctx["supabase"]).from("workflows").update(update).eq("id", data.id);
     if (uErr) throw new Error(uErr.message);
-    void patch;
 
     return { versionId: version.id as string, version: nextVersion, issues };
   });
