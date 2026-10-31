@@ -23,7 +23,9 @@ export type NodeType = (typeof NODE_TYPES)[number];
 
 export const nodeTypeSchema = z.enum(NODE_TYPES);
 
-export const nodeConfigSchema = z.record(z.string(), z.unknown());
+// Config values are free-form JSON so any serializable payload can be stored.
+// `any` keeps the inferred type assignable across the RPC serialization check.
+export const nodeConfigSchema = z.record(z.string(), z.any());
 
 export const workflowNodeSchema = z.object({
   id: z.string().min(1).max(64).regex(/^[a-zA-Z0-9_]+$/, "Node ids may contain letters, numbers and underscores only"),

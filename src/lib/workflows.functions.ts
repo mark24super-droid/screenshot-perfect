@@ -15,7 +15,17 @@ import { getUsageSnapshot } from "@/lib/usage.server";
 // Helpers
 // ---------------------------------------------------------------------------
 
-type Ctx = { supabase: import("@supabase/supabase-js").SupabaseClient; userId: string; claims: unknown };
+type Ctx = {
+  supabase: import("@supabase/supabase-js").SupabaseClient<
+    import("@/integrations/supabase/types").Database,
+    "public",
+    "public",
+    any,
+    any
+  >;
+  userId: string;
+  claims: unknown;
+};
 
 async function requireWorkspace(context: Ctx) {
   const { supabase, userId } = context;
