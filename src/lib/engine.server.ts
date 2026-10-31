@@ -33,6 +33,8 @@ export interface NodeRunOutput {
 export interface RunContext {
   mode: "simulation" | "live";
   userId: string;
+  /** Outputs of completed nodes, used to resolve {{node.field}} variables. */
+  outputs: Record<string, Record<string, unknown>>;
 }
 
 type NodeHandler = (node: WorkflowNode, ctx: RunContext) => Promise<NodeRunOutput>;
@@ -278,14 +280,8 @@ export async function runWorkflow(
   const order = executionOrder(definition).slice(0, MAX_NODES);
   const steps: EngineStepResult[] = [];
   const outputs: Record<string, Record<string, unknown>> = {};
+  const runCtx: RunContext = { ...ctx, outputs };
   let sawWaiting = false;
-
-  const runCtx: RunContext & { outputs: Record<string, Record<string, unknown>> } = {
-    ...ctx,
-    outputs,
-  } as RunContext & { outputs: Record<string, Record<string, unknown>> };
-  // resolveTemplate reads outputs from the ctx.outputs field below.
-  const handlerCtx = Object.assign({}, ctx, { outputs });
 
   for (const node of order) {
     const handler = HANDLERS[node.type];
@@ -296,18 +292,10 @@ export async function runWorkflow(
       return { status: "failed", steps, errorSummary: result.errorMessage ?? null };
     }
 
-    // Handlers read ctx.outputs for variable resolution.
-    const nodeCtx = { ...ctx, outputs } as RunContext & { outputs: Record<string, Record<string, unknown>> };
-    void runCtx; void handlerCtx; void nodeCtx;
-
     const startedAt = Date.now();
     let result: NodeRunOutput;
     try {
-      result = await withTimeout(
-        handler(node, { ...ctx, outputs } as unknown as RunContext),
-        NODE_TIMEOUT_MS,
-        nodeLabelOf(node),
-      );
+      result = await withTimeout(handler(node, runCtx), NODE_TIMEOUT_MS, nodeLabelOf(node));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown node failure";
       result = failed(message, "node_exception");
@@ -359,11 +347,3 @@ export function sanitize(value: unknown, depth = 0): unknown {
   }
   return value;
 }
-
-// RunContext needs outputs accessible to handlers via resolveTemplate;
-// handlers above build `{ ...ctx, outputs }` when invoking, and this alias
-// documents the expected shape.
-declare module "@/lib/workflow-schema" {
-  interface WorkflowNode {}
-}
-export type { RunContext as EngineRunContext };
