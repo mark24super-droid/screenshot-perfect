@@ -1,7 +1,8 @@
 // Server-only usage counting and plan-limit checks.
-import { createClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/integrations/supabase/types";
 
-type SupabaseClient = ReturnType<typeof createClient>;
+export type Db = SupabaseClient<Database, "public", "public", any, any>;
 
 export interface UsageSnapshot {
   workflows: number;
@@ -14,7 +15,7 @@ export interface UsageSnapshot {
   limitAiGenerations: number;
 }
 
-export async function getUsageSnapshot(supabase: SupabaseClient, workspaceId: string, planLimits: { workflows: number; monthlyExecutions: number; aiGenerations: number }): Promise<UsageSnapshot> {
+export async function getUsageSnapshot(supabase: Db, workspaceId: string, planLimits: { workflows: number; monthlyExecutions: number; aiGenerations: number }): Promise<UsageSnapshot> {
   const monthStart = new Date();
   monthStart.setUTCDate(1);
   monthStart.setUTCHours(0, 0, 0, 0);
@@ -49,7 +50,7 @@ export async function getUsageSnapshot(supabase: SupabaseClient, workspaceId: st
   };
 }
 
-export async function recordUsage(supabase: SupabaseClient, workspaceId: string, usageType: string, quantity = 1) {
+export async function recordUsage(supabase: Db, workspaceId: string, usageType: string, quantity = 1) {
   const { error } = await supabase.from("usage_records").insert({ workspace_id: workspaceId, usage_type: usageType, quantity });
   if (error) console.error("usage record failed", error.message);
 }
