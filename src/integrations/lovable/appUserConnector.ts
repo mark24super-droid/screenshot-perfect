@@ -84,9 +84,9 @@ export interface CallAsAppUserParams {
   connectorId: string;
   /** Path under the connector, e.g. "/gmail/v1/users/me/profile". Leading slash optional. */
   path: string;
-  init?: RequestInit;
+  init?: RequestInit | undefined;
   /** Scopes this call needs (names without spaces or commas, at most 64); a grant missing one is answered 401 credential_scopes_stale instead of reaching the provider. */
-  requiredScopes?: string[];
+  requiredScopes?: string[] | undefined;
 }
 
 export async function callAsAppUser({
