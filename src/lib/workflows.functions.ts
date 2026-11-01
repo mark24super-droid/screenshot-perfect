@@ -441,7 +441,7 @@ export const instantiateTemplate = createServerFn({ method: "POST" })
     const workspace = await requireWorkspace(context as Ctx);
     const supabase = context.supabase as Ctx["supabase"];
     const { data: template } = await supabase.from("templates").select("name, description, definition").eq("slug", data.slug).eq("is_published", true).single();
-    if (!template) throw new Error("Template not found.");
+    if (!template || !template.definition) throw new Error("Template not found.");
 
     const plan = await getPlanForUser(supabase, context.userId);
     const usage = await getUsageSnapshot(supabase, workspace.id, plan.limits);
