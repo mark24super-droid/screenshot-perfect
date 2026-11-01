@@ -24,7 +24,7 @@ export type LiveOutcome<T> =
 async function withKey<T>(
   userId: string,
   connectorId: "google_mail" | "google_sheets",
-  run: (connectionKey: string) => Promise<{ kind: "ok"; data: T } | { kind: "provider_error"; message: string }>,
+  run: (connectionKey: string) => Promise<LiveOutcome<T>>,
 ): Promise<LiveOutcome<T>> {
   let connectionKey: string | null;
   try {
@@ -36,8 +36,7 @@ async function withKey<T>(
     return { kind: "not_connected", message: `${connectorId === "google_mail" ? "Gmail" : "Google Sheets"} is not connected yet. Connect it on the Integrations page, or run this workflow in simulation mode.` };
   }
   try {
-    const result = await run(connectionKey);
-    return result;
+    return await run(connectionKey);
   } catch (err) {
     console.error(`${connectorId} adapter error`, err);
     return { kind: "provider_error", message: "The provider request failed. Check the connection and try again." };
@@ -196,8 +195,9 @@ export function findSheetRow(
     if (!res.ok) return { kind: "provider_error" as const, message: `Sheets read failed (${res.status})` };
     const data = (await res.json()) as { values?: unknown[][] };
     const rows = data.values ?? [];
-    if (!rows.length) return { kind: "ok", data: { found: false, row: null } };
-    const [headers, ...body] = rows;
+    if (!rows.length || !rows[0]) return { kind: "ok", data: { found: false, row: null } };
+    const headers = rows[0];
+    const body = rows.slice(1);
     const colIdx = headers.findIndex((h) => String(h).toLowerCase() === column.toLowerCase());
     if (colIdx === -1) return { kind: "ok", data: { found: false, row: null } };
     const found = body.find((r) => String(r[colIdx] ?? "") === value);
