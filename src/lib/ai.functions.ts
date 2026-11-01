@@ -227,7 +227,9 @@ Rules:
     );
     const edges = [] as { id: string; source: string; target: string }[];
     for (let i = 0; i < ordered.length - 1; i++) {
-      edges.push({ id: `edge_${i + 1}`, source: ordered[i], target: ordered[i + 1] });
+      const source = ordered[i]!;
+      const target = ordered[i + 1]!;
+      edges.push({ id: `edge_${i + 1}`, source, target });
     }
 
     const missingConfiguration: string[] = [];
@@ -239,7 +241,7 @@ Rules:
         }
       }
       if (node.type === "ai.extract") {
-        const fields = node.config.fields;
+        const fields = node.config["fields"];
         if (!Array.isArray(fields) || fields.length === 0) missingConfiguration.push("AI Extract needs fields to extract");
       }
     }
