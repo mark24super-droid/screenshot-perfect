@@ -54,7 +54,7 @@ import { Label } from "@/components/ui/label";
 import { WORKFLOW_STATUS_LABELS, STATUS_TONE, formatDuration } from "@/lib/status";
 import { NODE_SPECS, type NodeType } from "@/lib/workflow-schema";
 
-export const Route = createFileRoute("/_authenticated/automations")({
+export const Route = createFileRoute("/_authenticated/automations/")({
   head: () => ({
     meta: [
       { title: "Automations — FlowMate AI" },
