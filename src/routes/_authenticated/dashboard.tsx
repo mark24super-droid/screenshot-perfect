@@ -1,6 +1,7 @@
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, createFileRoute } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
   Workflow as WorkflowIcon,
