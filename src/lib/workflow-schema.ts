@@ -73,7 +73,7 @@ export function parseVariableRefs(value: unknown): { nodeId: string; field: stri
   const walk = (v: unknown) => {
     if (typeof v === "string") {
       for (const m of v.matchAll(/\{\{\s*([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\}\}/g)) {
-        refs.push({ nodeId: m[1], field: m[2] });
+        refs.push({ nodeId: m[1]!, field: m[2]! });
       }
     } else if (Array.isArray(v)) {
       v.forEach(walk);
@@ -107,6 +107,12 @@ export interface ValidationIssue {
 
 export interface ValidateOptions {
   connectedIntegrations?: ("google_mail" | "google_sheets")[];
+  /**
+   * Activation and live runs require every integration to be connected.
+   * Simulations deliberately do not: that is what makes them safe to try
+   * before connecting an account.
+   */
+  requireIntegrations?: boolean;
 }
 
 /**
@@ -176,7 +182,7 @@ export function validateWorkflow(
   // Reachability from trigger.
   if (triggers.length === 1) {
     const reachable = new Set<string>();
-    const stack = [triggers[0].id];
+    const stack = [triggers[0]!.id];
     while (stack.length) {
       const cur = stack.pop()!;
       if (reachable.has(cur)) continue;
@@ -208,7 +214,7 @@ export function validateWorkflow(
       }
     }
     if (node.type === "ai.extract") {
-      const fields = node.config.fields;
+      const fields = node.config["fields"];
       if (!Array.isArray(fields) || fields.length === 0) {
         issues.push({ level: "error", nodeId: node.id, message: "AI Extract needs at least one field to extract." });
       } else if (fields.some((f) => typeof f !== "string" || !/^[a-zA-Z0-9_]+$/.test(f))) {
@@ -235,13 +241,14 @@ export function validateWorkflow(
         }
       }
     }
-    // Integration connectivity.
+    // Integration connectivity. Missing connections only block activation and
+    // live runs; simulation remains available and is clearly labelled.
     const integration = requiredIntegrationForNode(node.type);
     if (integration && options.connectedIntegrations && !options.connectedIntegrations.includes(integration)) {
       issues.push({
-        level: "error",
+        level: options.requireIntegrations ? "error" : "warning",
         nodeId: node.id,
-        message: `${spec.label} needs the ${INTEGRATION_LABELS[integration]} integration, which is not connected yet.`,
+        message: `${spec.label} needs the ${INTEGRATION_LABELS[integration]} integration. It is not connected yet, so only simulation mode can run this step.`,
       });
     }
   }
@@ -268,7 +275,7 @@ export function resolveTemplate(value: unknown, outputs: Record<string, Record<s
   if (typeof value === "string") {
     const full = value.match(/^\{\{\s*([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\}\}$/);
     if (full) {
-      const v = outputs[full[1]]?.[full[2]];
+      const v = outputs[full[1]!]?.[full[2]!];
       return v ?? "";
     }
     return value.replace(/\{\{\s*([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\}\}/g, (_, id, field) => {
@@ -352,9 +359,12 @@ export const NODE_SPECS: Record<NodeType, NodeSpec> = {
     requiredFields: [
       { key: "to", label: "Recipient", type: "text", required: true, placeholder: "name@example.com" },
       { key: "subject", label: "Subject", type: "text", required: true },
+      { key: "body", label: "Message", type: "textarea", required: true },
     ],
     fields: [
       { key: "to", label: "Recipient", type: "text", required: true, placeholder: "name@example.com", help: "Supports variables like {{trigger_1.email}}" },
+      { key: "cc", label: "CC (optional)", type: "text", placeholder: "name@example.com" },
+      { key: "bcc", label: "BCC (optional)", type: "text", placeholder: "name@example.com" },
       { key: "subject", label: "Subject", type: "text", required: true },
       { key: "body", label: "Message", type: "textarea", required: true },
     ],
@@ -365,8 +375,11 @@ export const NODE_SPECS: Record<NodeType, NodeSpec> = {
     short: "Watches a spreadsheet and exposes newly added rows.",
     category: "spreadsheets",
     kind: "trigger",
-    requiredFields: [{ key: "spreadsheet", label: "Spreadsheet name", type: "text", required: true }],
-    fields: [{ key: "spreadsheet", label: "Spreadsheet name", type: "text", required: true }],
+    requiredFields: [{ key: "spreadsheetId", label: "Spreadsheet ID", type: "text", required: true }],
+    fields: [
+      { key: "spreadsheetId", label: "Spreadsheet ID", type: "text", required: true, help: "Found in the sheet URL between /d/ and /edit" },
+      { key: "worksheet", label: "Worksheet", type: "text", placeholder: "Sheet1" },
+    ],
   },
   "google_sheets.add_row": {
     type: "google_sheets.add_row",
@@ -374,9 +387,9 @@ export const NODE_SPECS: Record<NodeType, NodeSpec> = {
     short: "Appends a row with mapped values to a spreadsheet.",
     category: "spreadsheets",
     kind: "action",
-    requiredFields: [{ key: "spreadsheet", label: "Spreadsheet name", type: "text", required: true }],
+    requiredFields: [{ key: "spreadsheetId", label: "Spreadsheet ID", type: "text", required: true }],
     fields: [
-      { key: "spreadsheet", label: "Spreadsheet name", type: "text", required: true },
+      { key: "spreadsheetId", label: "Spreadsheet ID", type: "text", required: true, help: "Found in the sheet URL between /d/ and /edit" },
       { key: "worksheet", label: "Worksheet", type: "text", placeholder: "Sheet1" },
       { key: "row", label: "Column values", type: "mapping", help: "Map column names to values or variables like {{extract_1.sender}}" },
     ],
@@ -388,12 +401,12 @@ export const NODE_SPECS: Record<NodeType, NodeSpec> = {
     category: "spreadsheets",
     kind: "action",
     requiredFields: [
-      { key: "spreadsheet", label: "Spreadsheet name", type: "text", required: true },
+      { key: "spreadsheetId", label: "Spreadsheet ID", type: "text", required: true },
       { key: "column", label: "Column", type: "text", required: true },
       { key: "value", label: "Value", type: "text", required: true },
     ],
     fields: [
-      { key: "spreadsheet", label: "Spreadsheet name", type: "text", required: true },
+      { key: "spreadsheetId", label: "Spreadsheet ID", type: "text", required: true, help: "Found in the sheet URL between /d/ and /edit" },
       { key: "worksheet", label: "Worksheet", type: "text", placeholder: "Sheet1" },
       { key: "column", label: "Column", type: "text", required: true },
       { key: "value", label: "Value", type: "text", required: true },
@@ -457,6 +470,50 @@ export function categoryNodeTypes(category: NodeCategory): NodeType[] {
 }
 
 /** Layout nodes in a simple top-down chain when no positions exist. */
+/**
+ * Accept both editor-native definitions ({ nodes, edges }) and the legacy /
+ * template shape that stores the trigger separately at the top level. The
+ * trigger is merged into `nodes` so validation and the engine always see one
+ * complete graph.
+ */
+export function normalizeWorkflowDefinition(input: unknown): WorkflowDefinition {
+  const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const rawNodes = Array.isArray(raw["nodes"])
+    ? raw["nodes"].filter((n): n is Record<string, unknown> => !!n && typeof n === "object").map((n) => ({ ...n }))
+    : [];
+
+  if (raw["trigger"] && typeof raw["trigger"] === "object") {
+    const trigger = { ...(raw["trigger"] as Record<string, unknown>) };
+    const triggerId = typeof trigger["id"] === "string" ? trigger["id"] : "trigger_1";
+    if (!rawNodes.some((n) => n["id"] === triggerId)) {
+      rawNodes.unshift({ ...trigger, id: triggerId, position: trigger["position"] ?? { x: 80, y: 180 } });
+    }
+  }
+
+  const rawEdges = Array.isArray(raw["edges"])
+    ? raw["edges"]
+        .filter((e): e is Record<string, unknown> => !!e && typeof e === "object")
+        .map((e, i) => ({
+          id: typeof e["id"] === "string" && e["id"] ? e["id"] : `edge_${i + 1}`,
+          source: e["source"],
+          target: e["target"],
+        }))
+    : [];
+
+  const parsed = workflowDefinitionSchema.safeParse({
+    nodes: rawNodes,
+    edges: rawEdges,
+    viewport: raw["viewport"],
+  });
+  if (!parsed.success) {
+    // Saved definitions occasionally predate the current schema. Returning an
+    // empty canvas is honest and lets the editor surface the problem instead
+    // of crashing the page with a Zod error.
+    return { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } };
+  }
+  return autoLayout(parsed.data);
+}
+
 export function autoLayout(definition: WorkflowDefinition): WorkflowDefinition {
   const { nodes, edges } = definition;
   const triggers = nodes.filter((n) => isTriggerType(n.type));

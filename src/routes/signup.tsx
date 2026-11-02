@@ -53,7 +53,7 @@ function SignupPage() {
       return;
     }
     if (data.session) {
-      navigate({ to: "/dashboard", replace: true });
+      navigate({ to: "/onboarding", replace: true });
       return;
     }
     // Email confirmation is on: the user is not signed in until they confirm.

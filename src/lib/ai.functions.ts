@@ -1,12 +1,20 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { runStructuredCompletion, AiUnavailableError } from "@/lib/ai.server";
-import { NODE_TYPES, NODE_SPECS, nodeTypeSchema, autoLayout, type WorkflowDefinition, type NodeType } from "@/lib/workflow-schema";
+import { runStructuredCompletion, AiUnavailableError, isAiConfigured } from "@/lib/ai.server";
+import {
+  NODE_TYPES,
+  NODE_SPECS,
+  nodeTypeSchema,
+  autoLayout,
+  integrationForWorkflow,
+  isTriggerType,
+  validateWorkflow,
+  type WorkflowDefinition,
+  type NodeType,
+} from "@/lib/workflow-schema";
 import { getPlan } from "@/lib/plans";
 import { getUsageSnapshot, recordUsage } from "@/lib/usage.server";
-
-const MODEL = "openai/gpt-6-astra";
 
 // The plan the model returns. Config values arrive as key/value string pairs
 // so the schema can be strict; they are converted to a config object here.
@@ -95,6 +103,14 @@ function coerceConfigValues(type: NodeType, config: Record<string, unknown>): Re
     if (field.type === "fields" && typeof v === "string") {
       out[field.key] = v.split(/[,\n]/).map((f) => f.trim()).filter(Boolean);
     }
+    if (field.type === "mapping" && typeof v === "string") {
+      try {
+        const parsed = JSON.parse(v);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) out[field.key] = parsed;
+      } catch {
+        // leave the string; validation surfaces the missing mapping
+      }
+    }
     if ((field.type === "text" || field.type === "textarea") && typeof v !== "string") {
       out[field.key] = String(v);
     }
@@ -110,6 +126,181 @@ export interface GeneratedPlan {
   missingConfiguration: string[];
   explanation: string;
   clarification: string | null;
+  /** True when the plan came from the deterministic fallback, not an LLM. */
+  demoMode: boolean;
+}
+
+interface DraftNode {
+  id: string;
+  type: NodeType;
+  config: Record<string, unknown>;
+}
+
+function finishPlan(input: {
+  name: string;
+  description: string;
+  nodes: DraftNode[];
+  explanation: string;
+  clarification?: string | null;
+  demoMode: boolean;
+}): GeneratedPlan {
+  const edges = input.nodes.slice(0, -1).map((node, i) => ({
+    id: `edge_${i + 1}`,
+    source: node.id,
+    target: input.nodes[i + 1]!.id,
+  }));
+  const definition = autoLayout({
+    nodes: input.nodes.map((n) => ({ ...n, position: undefined })),
+    edges,
+    viewport: { x: 0, y: 0, zoom: 1 },
+  });
+
+  const missingConfiguration: string[] = [];
+  for (const node of definition.nodes as DraftNode[]) {
+    for (const field of NODE_SPECS[node.type].requiredFields ?? []) {
+      const v = node.config[field.key];
+      if (v === undefined || v === null || (typeof v === "string" && v.trim() === "")) {
+        missingConfiguration.push(`${NODE_SPECS[node.type].label} needs a ${field.label.toLowerCase()}`);
+      }
+    }
+    if (node.type === "ai.extract") {
+      const fields = node.config["fields"];
+      if (!Array.isArray(fields) || fields.length === 0) missingConfiguration.push("AI Extract needs fields to extract");
+    }
+  }
+  // Validation is the source of truth for anything the AI may have mangled.
+  for (const issue of validateWorkflow(definition)) {
+    if (issue.level === "error" && !missingConfiguration.includes(issue.message)) {
+      missingConfiguration.push(issue.message);
+    }
+  }
+
+  return {
+    name: input.name.slice(0, 80),
+    description: input.description.slice(0, 300),
+    definition,
+    requiredIntegrations: integrationForWorkflow(definition),
+    missingConfiguration,
+    explanation: input.explanation,
+    clarification: input.clarification ?? null,
+    demoMode: input.demoMode,
+  };
+}
+
+/**
+ * Deterministic fallback used when no AI provider is configured. It still
+ * produces a real, schema-valid workflow graph that the user must review and
+ * configure — it never claims to be AI output.
+ */
+export function buildDemoPlan(prompt: string): GeneratedPlan {
+  const p = prompt.toLowerCase();
+  const wantsEmailIn = /gmail|email|inbox|mail/.test(p);
+  const wantsSheet = /sheet|spreadsheet|row|table/.test(p);
+  const wantsSummary = /summar|report|digest|overview/.test(p);
+  const wantsNotify = /notify|notification|alert|send|confirmation|reply/.test(p);
+  const invoice = /invoice|receipt|bill/.test(p);
+  const lead = /lead|form|customer|contact|signup/.test(p);
+
+  const sampleText = invoice
+    ? "Invoice INV-2043 from Bright Studio. Amount due: $420.00. Payment is due by 2026-11-14. Contact: billing@brightstudio.example"
+    : lead
+      ? "New lead: Jane Doe, jane@example.com, company Acme Ltd. She asked about the Pro plan."
+      : "New message from a customer asking about pricing and onboarding.";
+
+  const trigger: DraftNode = wantsEmailIn && !wantsSummary
+    ? {
+        id: "trigger_1",
+        type: "gmail.new_email",
+        config: { filter: invoice ? "has:attachment" : /lead|form/.test(p) ? "newer_than:1d" : "" },
+      }
+    : {
+        id: "trigger_1",
+        type: "manual.trigger",
+        config: {
+          sampleInput: JSON.stringify({
+            text: sampleText,
+            subject: invoice ? "Invoice INV-2043 from Bright Studio" : "New request",
+            from: "customer@example.com",
+            body: sampleText,
+          }),
+        },
+      };
+
+  const nodes: DraftNode[] = [trigger];
+
+  if (wantsSummary) {
+    nodes.push({
+      id: "summarize_1",
+      type: "ai.summarize",
+      config: {
+        source: "{{trigger_1.body}}",
+        style: "paragraph",
+        maxLength: 120,
+      },
+    });
+  } else {
+    nodes.push({
+      id: "extract_1",
+      type: "ai.extract",
+      config: {
+        source: "{{trigger_1.body}}",
+        fields: invoice ? ["invoice_number", "amount", "date"] : ["name", "email", "request"],
+      },
+    });
+  }
+
+  if (wantsSheet) {
+    nodes.push({
+      id: "sheets_1",
+      type: "google_sheets.add_row",
+      config: {
+        spreadsheetId: "",
+        worksheet: "Sheet1",
+        row: invoice
+          ? {
+              "Invoice Number": "{{extract_1.invoice_number}}",
+              Amount: "{{extract_1.amount}}",
+              Date: "{{extract_1.date}}",
+            }
+          : {
+              Name: "{{extract_1.name}}",
+              Email: "{{extract_1.email}}",
+              Request: "{{extract_1.request}}",
+            },
+      },
+    });
+  }
+
+  if (wantsNotify || wantsSummary) {
+    nodes.push({
+      id: "email_1",
+      type: "gmail.send_email",
+      config: {
+        to: "{{trigger_1.from}}",
+        subject: wantsSummary ? "Your automated summary" : "We received your request",
+        body: wantsSummary ? "{{summarize_1.summary}}" : "Thanks! We received your message and will reply shortly.",
+      },
+    });
+  }
+
+  const name = wantsSummary
+    ? "Daily message summary"
+    : invoice && wantsSheet
+      ? "Invoice email to spreadsheet"
+      : lead
+        ? "Lead capture follow-up"
+        : wantsSheet
+          ? "Extract text into a spreadsheet"
+          : "New automation";
+
+  return finishPlan({
+    name,
+    description: prompt.slice(0, 200),
+    nodes,
+    explanation:
+      "Demo plan. No AI provider is configured, so FlowMate built this starter workflow from keywords in your description. Review every step, fill in the missing settings, and test it in simulation mode before activating.",
+    demoMode: true,
+  });
 }
 
 export const generateWorkflow = createServerFn({ method: "POST" })
@@ -127,6 +318,12 @@ export const generateWorkflow = createServerFn({ method: "POST" })
       .limit(1)
       .single();
     if (wsError || !workspace) throw new Error("No workspace found for this account.");
+    // AI is optional: without a provider we return a deterministic starter
+    // plan instead of failing, clearly labelled as demo output.
+    if (!isAiConfigured()) {
+      return { ok: true, plan: buildDemoPlan(data.prompt) };
+    }
+
     const plan = getPlan("free");
     const usage = await getUsageSnapshot(supabase, workspace.id, plan.limits);
     if (usage.aiGenerationsThisMonth >= usage.limitAiGenerations) {
@@ -162,14 +359,24 @@ Rules:
     let raw: string;
     try {
       raw = await runStructuredCompletion({
-        model: MODEL,
         input: `${systemPrompt}\n\n${userPrompt}`,
         schemaName: "workflow_plan",
         jsonSchema: planJsonSchema as unknown as Record<string, unknown>,
         maxOutputTokens: 4000,
       });
     } catch (err) {
-      if (err instanceof AiUnavailableError) return { ok: false, error: err.safeMessage };
+      if (err instanceof AiUnavailableError) {
+        // Misconfiguration is recoverable: hand the user a demo plan instead
+        // of a dead end, and label it honestly.
+        if ([401, 403, 404].includes(err.status)) {
+          const demo = buildDemoPlan(data.prompt);
+          return {
+            ok: true,
+            plan: { ...demo, explanation: `${err.safeMessage} ${demo.explanation}` },
+          };
+        }
+        return { ok: false, error: err.safeMessage };
+      }
       throw err;
     }
 
@@ -191,10 +398,10 @@ Rules:
 
     // Hard server-side validation: no model output is trusted.
     const triggerType = nodeTypeSchema.safeParse(parsed.trigger?.type);
-    if (!triggerType.success) {
+    if (!triggerType.success || !isTriggerType(triggerType.data)) {
       return { ok: false, error: "The AI proposed an unsupported trigger. Try describing the task differently." };
     }
-    const cleanedNodes: { id: string; type: NodeType; config: Record<string, unknown> }[] = [];
+    const cleanedNodes: DraftNode[] = [];
     const triggerId = (parsed.trigger?.id ?? "trigger_1").replace(/[^a-zA-Z0-9_]/g, "") || "trigger_1";
     cleanedNodes.push({
       id: triggerId,
@@ -207,6 +414,7 @@ Rules:
     for (const action of parsed.actions ?? []) {
       const type = nodeTypeSchema.safeParse(action?.type);
       if (!type.success) continue; // silently drop unsupported node types
+      if (isTriggerType(type.data)) continue; // exactly one trigger is allowed
       let id = (action.id ?? "").replace(/[^a-zA-Z0-9_]/g, "") || `${type.data.replace(".", "_")}_${actionIndex}`;
       while (seenIds.has(id)) id = `${id}_${actionIndex}`;
       seenIds.add(id);
@@ -218,56 +426,40 @@ Rules:
       return { ok: false, error: "The AI couldn't turn this into a multi-step workflow. Add more detail about what should happen." };
     }
 
-    // Edges follow the returned chain, filtered to real ids, trigger first.
+    // The model may return the actions out of chain order. Reorder them to the
+    // chain, keeping any unmentioned nodes after it, so edges form a real path.
     const chainIds = [triggerId, ...(parsed.chain ?? [])].filter(
       (id, i, arr) => seenIds.has(id) && arr.indexOf(id) === i,
     );
-    const ordered = [...chainIds, ...seenIds].filter(
-      (id, i, arr) => arr.indexOf(id) === i,
-    );
-    const edges = [] as { id: string; source: string; target: string }[];
-    for (let i = 0; i < ordered.length - 1; i++) {
-      const source = ordered[i]!;
-      const target = ordered[i + 1]!;
-      edges.push({ id: `edge_${i + 1}`, source, target });
+    const byId = new Map(cleanedNodes.map((n) => [n.id, n]));
+    const orderedNodes: DraftNode[] = [];
+    const added = new Set<string>();
+    for (const id of chainIds) {
+      const node = byId.get(id);
+      if (node && !added.has(id)) {
+        orderedNodes.push(node);
+        added.add(id);
+      }
     }
-
-    const missingConfiguration: string[] = [];
     for (const node of cleanedNodes) {
-      for (const field of NODE_SPECS[node.type].requiredFields ?? []) {
-        const v = node.config[field.key];
-        if (v === undefined || v === null || (typeof v === "string" && v.trim() === "")) {
-          missingConfiguration.push(`${NODE_SPECS[node.type].label} needs a ${field.label.toLowerCase()}`);
-        }
-      }
-      if (node.type === "ai.extract") {
-        const fields = node.config["fields"];
-        if (!Array.isArray(fields) || fields.length === 0) missingConfiguration.push("AI Extract needs fields to extract");
+      if (!added.has(node.id)) {
+        orderedNodes.push(node);
+        added.add(node.id);
       }
     }
 
-    const definition = autoLayout({
-      nodes: cleanedNodes.map((n) => ({ ...n, position: undefined })),
-      edges,
-      viewport: { x: 0, y: 0, zoom: 1 },
+    const result = finishPlan({
+      name: parsed.name ?? "New Automation",
+      description: parsed.description ?? "",
+      nodes: orderedNodes,
+      explanation: parsed.explanation ?? "",
+      clarification: clarificationOf(parsed),
+      demoMode: false,
     });
 
     await recordUsage(supabase, workspace.id, "ai_generation");
 
-    return {
-      ok: true,
-      plan: {
-        name: (parsed.name ?? "New Automation").slice(0, 80),
-        description: (parsed.description ?? "").slice(0, 300),
-        definition,
-        requiredIntegrations: (parsed.requiredIntegrations ?? []).filter(
-          (i): i is "google_mail" | "google_sheets" => i === "google_mail" || i === "google_sheets",
-        ),
-        missingConfiguration,
-        explanation: parsed.explanation ?? "",
-        clarification: clarificationOf(parsed),
-      },
-    };
+    return { ok: true, plan: result };
   });
 
 interface ParsedPlanShape {

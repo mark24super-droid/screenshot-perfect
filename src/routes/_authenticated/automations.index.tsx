@@ -122,7 +122,7 @@ function AutomationsPage() {
         toast.error(first?.message ?? res.limitError ?? "The workflow has problems to fix first.");
         return;
       }
-      toast.success(`Simulation finished: ${res.status.replace("_", " ")}. See it in Activity History.`);
+      toast.success(`Simulation finished: ${res.status?.replace("_", " ") ?? "completed"}. See it in Activity History.`);
       navigate({ to: "/history" });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Test failed."),

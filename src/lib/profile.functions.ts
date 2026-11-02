@@ -54,7 +54,9 @@ export const updateMyProfile = createServerFn({ method: "POST" })
   .inputValidator((input) => updateSchema.parse(input))
   .handler(async ({ data, context }) => {
     const { supabase, userId } = context;
-    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    const patch: import("@/integrations/supabase/types").Database["public"]["Tables"]["profiles"]["Update"] = {
+      updated_at: new Date().toISOString(),
+    };
     if (data.displayName !== undefined) patch.display_name = data.displayName;
     if (data.workspaceName !== undefined) patch.workspace_name = data.workspaceName;
     if (data.timezone !== undefined) patch.timezone = data.timezone;

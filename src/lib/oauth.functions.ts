@@ -42,9 +42,10 @@ export const getIntegrationStatuses = createServerFn({ method: "GET" })
       .select("provider, status, account_label, connected_at")
       .eq("user_id", context.userId);
     const rows = data ?? [];
+    const gatewayReady = !!process.env["LOVABLE_API_KEY"];
     const clientsConfigured = CONNECTOR_IDS.map((c) => ({
       connectorId: c,
-      configured: !!process.env[clientApiKeyEnv(c)],
+      configured: gatewayReady && !!process.env[clientApiKeyEnv(c)],
     }));
     return {
       google_mail: rows.find((r) => r.provider === "google_mail") ?? null,
@@ -79,7 +80,7 @@ export const startConnectorConnect = createServerFn({ method: "POST" })
       appUserId: context.userId,
       clientAPIKey,
       returnUrl,
-      connectionAPIKey: connectionAPIKey ?? undefined,
+      connectionAPIKey: connectionAPIKey ?? null,
       credentialsConfiguration: { scopes: scopesFor(connectorId) },
     });
     return { ok: true as const, authorizationUrl };
@@ -95,50 +96,87 @@ export const completeAppUserConnection = createServerFn({ method: "POST" })
     }
     await saveConnectionKeyForUser(context.userId, connectorId, connectionAPIKey);
 
-    // Mirror the connection state into the app's integrations table.
+    // Do not report a connection as working until the provider actually
+    // accepts the credential. Missing offline access or declined scopes show
+    // up here instead of failing silently on the first live run.
+    const check = await checkConnection(context.userId, connectorId as ConnectorId);
     const supabase = context.supabase as import("@supabase/supabase-js").SupabaseClient<
       import("@/integrations/supabase/types").Database, "public", "public", any, any
     >;
-    const { error } = await supabase.from("integrations").upsert(
-      {
-        user_id: context.userId,
-        provider: connectorId,
-        status: "connected",
-        scopes: scopesFor(connectorId),
-        connected_at: new Date().toISOString(),
-      },
-      { onConflict: "user_id,provider" },
+    await markIntegrationStatus(
+      supabase,
+      context.userId,
+      connectorId as ConnectorId,
+      check.reconnectRequired ? "reconnect_required" : check.connected ? "connected" : "not_connected",
+      check.account,
     );
-    if (error) throw new Error(error.message);
-    return { ok: true as const, connectorId };
+    return {
+      ok: true as const,
+      connectorId,
+      connected: check.connected,
+      message: check.connected
+        ? undefined
+        : check.error ?? "The connection was created but the provider did not grant usable access. Reconnect and accept all permissions.",
+    };
   });
+
+async function checkConnection(
+  userId: string,
+  connectorId: ConnectorId,
+): Promise<{ connected: boolean; reconnectRequired: boolean; account?: string | null; error?: string }> {
+  const connectionKey = await getConnectionKeyForUser(userId, connectorId);
+  if (!connectionKey) {
+    return { connected: false, reconnectRequired: false, error: "No stored credential for this connection." };
+  }
+  const res = await callAsAppUser({
+    gatewayBaseUrl: GATEWAY_BASE_URL,
+    connectionAPIKey: connectionKey,
+    connectorId,
+    // Gmail has a profile endpoint. Sheets has no account root; a valid token
+    // reaches the API and returns 404 for the missing spreadsheet id, while a
+    // stale credential returns 401 credential_*.
+    path: connectorId === "google_mail" ? "/gmail/v1/users/me/profile" : "/sheets/v4/spreadsheets",
+    requiredScopes: scopesFor(connectorId),
+  });
+  if (await appUserReconnectRequired(res)) {
+    return { connected: false, reconnectRequired: true, error: "Google rejected this credential. Reconnect the integration." };
+  }
+  if (res.ok || (connectorId === "google_sheets" && res.status === 404)) {
+    const email =
+      connectorId === "google_mail" && res.ok
+        ? (((await res.json().catch(() => null)) as { emailAddress?: string } | null)?.emailAddress ?? null)
+        : null;
+    return { connected: true, reconnectRequired: false, account: email };
+  }
+  return {
+    connected: false,
+    reconnectRequired: false,
+    error: `The provider rejected a verification call (${res.status}). Check that all requested permissions were granted.`,
+  };
+}
 
 export const verifyConnector = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input) => connectorSchema.parse(input))
   .handler(async ({ data, context }) => {
     const connectorId = data as ConnectorId;
-    const connectionKey = await getConnectionKeyForUser(context.userId, connectorId);
-    if (!connectionKey) return { connected: false as const, reconnectRequired: false };
-    const res = await callAsAppUser({
-      gatewayBaseUrl: GATEWAY_BASE_URL,
-      connectionAPIKey: connectionKey,
+    const check = await checkConnection(context.userId, connectorId);
+    const supabase = context.supabase as import("@supabase/supabase-js").SupabaseClient<
+      import("@/integrations/supabase/types").Database, "public", "public", any, any
+    >;
+    await markIntegrationStatus(
+      supabase,
+      context.userId,
       connectorId,
-      path: connectorId === "google_mail" ? "/gmail/v1/users/me/profile" : "/sheets/v4/?alt=json",
-      requiredScopes: scopesFor(connectorId),
-    });
-    if (await appUserReconnectRequired(res)) {
-      await markIntegrationStatus(context.supabase, context.userId, connectorId, "reconnect_required");
-      return { connected: false as const, reconnectRequired: true };
-    }
-    const email = connectorId === "google_mail" && res.ok
-      ? ((await res.json().catch(() => null)) as { emailAddress?: string } | null)?.emailAddress ?? null
-      : null;
-    if (res.ok) {
-      await markIntegrationStatus(context.supabase, context.userId, connectorId, "connected", email);
-      return { connected: true as const, reconnectRequired: false, account: email };
-    }
-    return { connected: false as const, reconnectRequired: false, error: `Provider check failed (${res.status}).` };
+      check.reconnectRequired ? "reconnect_required" : check.connected ? "connected" : "not_connected",
+      check.account,
+    );
+    return {
+      connected: check.connected,
+      reconnectRequired: check.reconnectRequired,
+      account: check.account,
+      error: check.error,
+    };
   });
 
 export const disconnectConnector = createServerFn({ method: "POST" })
@@ -164,7 +202,7 @@ async function markIntegrationStatus(
   >,
   userId: string,
   provider: ConnectorId,
-  status: "connected" | "reconnect_required",
+  status: "connected" | "reconnect_required" | "not_connected",
   accountLabel?: string | null,
 ) {
   await supabase.from("integrations").upsert(
@@ -173,7 +211,7 @@ async function markIntegrationStatus(
       provider,
       status,
       account_label: accountLabel ?? undefined,
-      connected_at: status === "connected" ? new Date().toISOString() : undefined,
+      connected_at: status === "connected" ? new Date().toISOString() : null,
     },
     { onConflict: "user_id,provider" },
   );

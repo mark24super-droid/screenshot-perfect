@@ -14,6 +14,8 @@ import {
   Mail,
   AlertTriangle,
   CheckCircle2,
+  Play,
+  Save,
 } from "lucide-react";
 import { createWorkflow, listTemplates, instantiateTemplate } from "@/lib/workflows.functions";
 import { generateWorkflow, type GeneratedPlan } from "@/lib/ai.functions";
@@ -80,13 +82,32 @@ function CreateAutomationPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: (input: { name: string; description: string; definition?: unknown }) =>
-      create({ data: input as never }),
-    onSuccess: (res) => {
+    mutationFn: (vars: {
+      test?: boolean;
+      toList?: boolean;
+      name: string;
+      description: string;
+      definition: unknown;
+      status?: "draft" | "needs_configuration";
+    }) =>
+      create({
+        data: {
+          name: vars.name,
+          description: vars.description,
+          definition: vars.definition,
+          status: vars.status ?? "draft",
+        } as never,
+      }),
+    onSuccess: (res, vars) => {
       void queryClient.invalidateQueries({ queryKey: ["workflows"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      toast.success("Workflow saved as a draft. Configure it in the editor.");
-      navigate({ to: "/automations/$id", params: { id: res.id } });
+      if (vars.toList) {
+        toast.success("Draft saved. You can reopen it from Automations at any time.");
+        navigate({ to: "/automations" });
+        return;
+      }
+      toast.success(vars.test ? "Draft saved — running a simulation test next." : "Workflow saved. Configure it in the editor.");
+      navigate({ to: "/automations/$id", params: { id: res.id }, search: vars.test ? { test: 1 } : {} });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Could not save the workflow."),
   });
@@ -130,6 +151,17 @@ function CreateAutomationPage() {
               <div className="mt-1 text-lg font-semibold">{plan.name}</div>
               <p className="mt-1 text-sm text-muted-foreground">{plan.description}</p>
             </div>
+
+            {plan.demoMode && (
+              <Alert className="border-primary/30 bg-accent/40">
+                <Sparkles className="h-4 w-4 text-primary" />
+                <AlertTitle>Demo plan — no AI provider configured</AlertTitle>
+                <AlertDescription>
+                  FlowMate generated this starter workflow from your description using deterministic rules, not an LLM.
+                  Review every step before activating it.
+                </AlertDescription>
+              </Alert>
+            )}
 
             {clarification && (
               <Alert>
@@ -198,14 +230,49 @@ function CreateAutomationPage() {
         <div className="flex flex-wrap gap-2">
           <Button
             onClick={() =>
-              createMutation.mutate({ name: plan.name, description: plan.description, definition: plan.definition })
+              createMutation.mutate({
+                name: plan.name,
+                description: plan.description,
+                definition: plan.definition,
+                status: plan.missingConfiguration.length ? "needs_configuration" : "draft",
+              })
             }
             disabled={createMutation.isPending}
           >
             {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
             Open Workflow Editor
           </Button>
-          <Button variant="outline" onClick={() => setPlan(null)}>Start over</Button>
+          <Button
+            variant="outline"
+            disabled={createMutation.isPending}
+            onClick={() =>
+              createMutation.mutate({
+                name: plan.name,
+                description: plan.description,
+                definition: plan.definition,
+                status: plan.missingConfiguration.length ? "needs_configuration" : "draft",
+                test: true,
+              })
+            }
+          >
+            <Play className="h-4 w-4" /> Test Workflow
+          </Button>
+          <Button
+            variant="outline"
+            disabled={createMutation.isPending}
+            onClick={() =>
+              createMutation.mutate({
+                name: plan.name,
+                description: plan.description,
+                definition: plan.definition,
+                status: plan.missingConfiguration.length ? "needs_configuration" : "draft",
+                toList: true,
+              })
+            }
+          >
+            <Save className="h-4 w-4" /> Save Draft
+          </Button>
+          <Button variant="ghost" onClick={() => setPlan(null)}>Start over</Button>
         </div>
       </div>
     );

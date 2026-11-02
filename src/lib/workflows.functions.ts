@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import {
   workflowDefinitionSchema,
+  normalizeWorkflowDefinition,
   validateWorkflow,
   integrationForWorkflow,
   isTriggerType,
@@ -71,9 +72,19 @@ export const listWorkflows = createServerFn({ method: "GET" })
     if (error) throw new Error(error.message);
 
     const ids = (workflows ?? []).map((w) => w.id);
-    const { data: execs } = ids.length
-      ? await (context.supabase as Ctx["supabase"]).from("executions").select("workflow_id, status, started_at").in("workflow_id", ids).order("started_at", { ascending: false })
-      : { data: [] as { workflow_id: string; status: string; started_at: string }[] };
+    const [{ data: execs }, { data: versions }] = await Promise.all([
+      ids.length
+        ? (context.supabase as Ctx["supabase"]).from("executions").select("workflow_id, status, started_at").in("workflow_id", ids).order("started_at", { ascending: false })
+        : Promise.resolve({ data: [] as { workflow_id: string; status: string; started_at: string }[] }),
+      ids.length
+        ? (context.supabase as Ctx["supabase"]).from("workflow_versions").select("workflow_id, version, definition").in("workflow_id", ids).order("version", { ascending: false })
+        : Promise.resolve({ data: [] as { workflow_id: string; version: number; definition: unknown }[] }),
+    ]);
+
+    const latestDefinition = new Map<string, unknown>();
+    for (const v of versions ?? []) {
+      if (!latestDefinition.has(v.workflow_id)) latestDefinition.set(v.workflow_id, v.definition);
+    }
 
     const byWorkflow = new Map<string, { status: string; started_at: string }[]>();
     for (const e of execs ?? []) {
@@ -97,6 +108,9 @@ export const listWorkflows = createServerFn({ method: "GET" })
         lastRunAt: runs[0]?.started_at ?? null,
         lastRunStatus: runs[0]?.status ?? null,
         successRate: rate,
+        integrations: latestDefinition.has(w.id)
+          ? integrationForWorkflow(normalizeWorkflowDefinition(latestDefinition.get(w.id)))
+          : [],
       };
     });
   });
@@ -121,9 +135,11 @@ export const getWorkflow = createServerFn({ method: "GET" })
       .limit(1)
       .single();
 
-    const definition = workflowDefinitionSchema.parse(version?.definition ?? { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } });
+    const definition = normalizeWorkflowDefinition(
+      version?.definition ?? { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } },
+    );
     const connected = await connectedIntegrations(context.supabase as Ctx["supabase"], context.userId);
-    const issues = validateWorkflow(definition, { connectedIntegrations: connected });
+    const issues = validateWorkflow(definition, { connectedIntegrations: connected, requireIntegrations: false });
 
     const { data: lastExecution } = await (context.supabase as Ctx["supabase"])
       .from("executions")
@@ -184,13 +200,23 @@ export const createWorkflow = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
 
     if (data.definition) {
-      const { error: vErr } = await (context.supabase as Ctx["supabase"]).from("workflow_versions").insert({
-        workflow_id: workflow.id,
-        version: 1,
-        definition: data.definition,
-        created_by: context.userId,
-      });
+      const { data: version, error: vErr } = await (context.supabase as Ctx["supabase"])
+        .from("workflow_versions")
+        .insert({
+          workflow_id: workflow.id,
+          version: 1,
+          definition: data.definition,
+          created_by: context.userId,
+        })
+        .select("id")
+        .single();
       if (vErr) throw new Error(vErr.message);
+      // A saved definition is immediately the active version. "Active" as a
+      // workflow status is still a separate, explicit publish action.
+      await (context.supabase as Ctx["supabase"])
+        .from("workflows")
+        .update({ active_version_id: version.id })
+        .eq("id", workflow.id);
     }
     return { id: workflow.id as string };
   });
@@ -232,23 +258,35 @@ export const saveWorkflow = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
 
     const connected = await connectedIntegrations(context.supabase as Ctx["supabase"], context.userId);
-    const issues = validateWorkflow(data.definition, { connectedIntegrations: connected });
+    const issues = validateWorkflow(data.definition, { connectedIntegrations: connected, requireIntegrations: false });
     const blocking = issues.filter((i) => i.level === "error");
     const trigger = data.definition.nodes.find((n) => isTriggerType(n.type));
 
-    const update: Record<string, unknown> = { updated_at: new Date().toISOString(), trigger_type: trigger?.type ?? null };
-    if (data.name !== undefined) update.name = data.name;
-    if (data.description !== undefined) update.description = data.description;
-    // An active workflow whose new save has blocking errors moves to
-    // needs_configuration; drafts that validate cleanly stay visible as ready.
+    const update: Record<string, unknown> = {
+      updated_at: new Date().toISOString(),
+      trigger_type: trigger?.type ?? null,
+      active_version_id: version.id,
+    };
+    if (data.name !== undefined) update["name"] = data.name;
+    if (data.description !== undefined) update["description"] = data.description;
+
     const { data: current } = await (context.supabase as Ctx["supabase"]).from("workflows").select("status").eq("id", data.id).single();
-    if (current?.status !== "active" && current?.status !== "paused") {
-      update.status = blocking.length === 0 ? "needs_configuration" : "needs_configuration";
+    let nextStatus: string;
+    if (current?.status === "active" && blocking.length > 0) {
+      nextStatus = "needs_configuration";
+    } else if (current?.status === "active") {
+      nextStatus = "active";
+    } else if (current?.status === "paused") {
+      nextStatus = "paused";
+    } else {
+      nextStatus = blocking.length > 0 ? "needs_configuration" : "draft";
     }
+    update["status"] = nextStatus;
+
     const { error: uErr } = await (context.supabase as Ctx["supabase"]).from("workflows").update(update).eq("id", data.id);
     if (uErr) throw new Error(uErr.message);
 
-    return { versionId: version.id as string, version: nextVersion, issues };
+    return { versionId: version.id as string, version: nextVersion, issues, status: nextStatus };
   });
 
 export const deleteWorkflow = createServerFn({ method: "POST" })
@@ -343,24 +381,36 @@ export const setWorkflowStatus = createServerFn({ method: "POST" })
       return { ok: true, status: "paused" };
     }
 
-    // Activate: validate the active version; block on any error.
-    if (!workflow.active_version_id) {
-      throw new Error("Save the workflow before activating it.");
+    // Activate: validate the latest saved version; block on any error.
+    let versionId = workflow.active_version_id;
+    if (!versionId) {
+      const { data: latest } = await (context.supabase as Ctx["supabase"])
+        .from("workflow_versions")
+        .select("id")
+        .eq("workflow_id", data.id)
+        .order("version", { ascending: false })
+        .limit(1)
+        .single();
+      versionId = latest?.id ?? null;
     }
+    if (!versionId) throw new Error("Save the workflow before activating it.");
     const { data: version } = await (context.supabase as Ctx["supabase"])
       .from("workflow_versions")
       .select("definition")
-      .eq("id", workflow.active_version_id)
+      .eq("id", versionId)
       .single();
     if (!version) throw new Error("Save the workflow before activating it.");
-    const definition = workflowDefinitionSchema.parse(version.definition);
+    const definition = normalizeWorkflowDefinition(version.definition);
     const connected = await connectedIntegrations(context.supabase as Ctx["supabase"], context.userId);
-    const issues = validateWorkflow(definition, { connectedIntegrations: connected });
+    const issues = validateWorkflow(definition, { connectedIntegrations: connected, requireIntegrations: true });
     const blocking = issues.filter((i) => i.level === "error");
     if (blocking.length > 0) {
-      throw new Error(`Fix ${blocking.length} problem${blocking.length > 1 ? "s" : ""} first: ${blocking[0].message}`);
+      throw new Error(`Fix ${blocking.length} problem${blocking.length > 1 ? "s" : ""} first: ${blocking[0]!.message}`);
     }
-    const { error } = await (context.supabase as Ctx["supabase"]).from("workflows").update({ status: "active" }).eq("id", data.id);
+    const { error } = await (context.supabase as Ctx["supabase"])
+      .from("workflows")
+      .update({ status: "active", active_version_id: versionId })
+      .eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true, status: "active" };
   });
@@ -381,7 +431,8 @@ export const getDashboardSummary = createServerFn({ method: "GET" })
       supabase.from("workflows").select("id, name, status, trigger_type, updated_at").eq("workspace_id", workspace.id).order("updated_at", { ascending: false }).limit(5),
       supabase
         .from("executions")
-        .select("id, workflow_id, status, mode, started_at, duration_ms, workflows(name)")
+        .select("id, workflow_id, status, mode, started_at, duration_ms, workflows!inner(name, workspace_id)")
+        .eq("workflows.workspace_id", workspace.id)
         .order("started_at", { ascending: false })
         .limit(8),
       supabase.from("integrations").select("provider, status").eq("user_id", context.userId),
@@ -430,7 +481,7 @@ export const listTemplates = createServerFn({ method: "GET" })
       description: t.description,
       category: t.category,
       complexity: t.complexity,
-      definition: t.definition as WorkflowDefinition,
+      definition: normalizeWorkflowDefinition(t.definition),
     }));
   });
 
@@ -449,7 +500,7 @@ export const instantiateTemplate = createServerFn({ method: "POST" })
       throw new Error(`You've reached the ${plan.name} plan limit of ${usage.limitWorkflows} workflows.`);
     }
 
-    const definition = workflowDefinitionSchema.parse(template.definition);
+    const definition = normalizeWorkflowDefinition(template.definition);
     const trigger = definition.nodes.find((n) => isTriggerType(n.type));
     const { data: workflow, error } = await supabase
       .from("workflows")
@@ -457,18 +508,23 @@ export const instantiateTemplate = createServerFn({ method: "POST" })
         workspace_id: workspace.id,
         name: template.name,
         description: template.description,
-        status: "draft",
+        status: "needs_configuration",
         trigger_type: trigger?.type ?? null,
       })
       .select("id")
       .single();
     if (error) throw new Error(error.message);
-    await supabase.from("workflow_versions").insert({
-      workflow_id: workflow.id,
-      version: 1,
-      definition,
-      created_by: context.userId,
-    });
+    const { data: version } = await supabase
+      .from("workflow_versions")
+      .insert({
+        workflow_id: workflow.id,
+        version: 1,
+        definition,
+        created_by: context.userId,
+      })
+      .select("id")
+      .single();
+    await supabase.from("workflows").update({ active_version_id: version?.id ?? null }).eq("id", workflow.id);
     return { id: workflow.id as string };
   });
 

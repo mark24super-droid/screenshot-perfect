@@ -62,7 +62,7 @@ export const PLANS: PlanDefinition[] = [
   },
 ];
 
-export const DEFAULT_PLAN: PlanDefinition = PLANS[0];
+export const DEFAULT_PLAN: PlanDefinition = PLANS[0]!;
 
 export function getPlan(id: string | null | undefined): PlanDefinition {
   return PLANS.find((p) => p.id === id) ?? DEFAULT_PLAN;

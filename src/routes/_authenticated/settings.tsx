@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import { toast } from "sonner";
+import { Loader2 } from "lucide-react";
 import { getMyProfile, updateMyProfile, updateMyWorkspaceName } from "@/lib/profile.functions";
 import { PageHeader } from "@/components/flowmate/page-header";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,15 @@ export const Route = createFileRoute("/_authenticated/settings")({
 
 const TIMEZONES = ["UTC", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "Asia/Kolkata", "Asia/Tokyo", "Australia/Sydney"];
 
+type ProfilePatch = {
+  displayName?: string;
+  timezone?: string;
+  defaultTestMode?: "simulation" | "live";
+  notifyExecutionFailures?: boolean;
+  notifyWeeklySummary?: boolean;
+  onboardingCompleted?: boolean;
+};
+
 function SettingsPage() {
   const fetchProfile = useServerFn(getMyProfile);
   const update = useServerFn(updateMyProfile);
@@ -42,12 +52,22 @@ function SettingsPage() {
   const [workspaceName, setWorkspaceName] = useState<string | null>(null);
 
   const saveProfile = useMutation({
-    mutationFn: (patch: Parameters<typeof update>[0]["data"]) => update({ data: patch }),
+    mutationFn: (patch: ProfilePatch) => update({ data: patch }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["profile"] });
       toast.success("Settings saved.");
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Save failed."),
+  });
+
+  const saveWorkspace = useMutation({
+    mutationFn: (name: string) => updateWorkspace({ data: { name } }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["profile"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      toast.success("Workspace name saved.");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not save the workspace name."),
   });
 
   if (isLoading || !data) {
@@ -93,9 +113,10 @@ function SettingsPage() {
           </div>
           <Button
             size="sm"
-            disabled={wn.trim() === p.workspaceName || !wn.trim() || saveProfile.isPending}
-            onClick={() => saveProfile.mutate({ workspaceName: wn.trim() })}
+            disabled={wn.trim() === p.workspaceName || !wn.trim() || saveWorkspace.isPending}
+            onClick={() => saveWorkspace.mutate(wn.trim())}
           >
+            {saveWorkspace.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             Save workspace
           </Button>
         </CardContent>

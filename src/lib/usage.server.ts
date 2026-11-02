@@ -20,27 +20,35 @@ export async function getUsageSnapshot(supabase: Db, workspaceId: string, planLi
   monthStart.setUTCDate(1);
   monthStart.setUTCHours(0, 0, 0, 0);
 
-  const [wfCount, execCount, failCount, aiCount] = await Promise.all([
-    supabase.from("workflows").select("id, status", { count: "exact", head: true }).eq("workspace_id", workspaceId),
+  const [wfCount, activeCount, execCount, failCount, aiCount] = await Promise.all([
+    supabase.from("workflows").select("id", { count: "exact", head: true }).eq("workspace_id", workspaceId),
+    supabase
+      .from("workflows")
+      .select("id", { count: "exact", head: true })
+      .eq("workspace_id", workspaceId)
+      .eq("status", "active"),
     supabase
       .from("executions")
-      .select("id", { count: "exact", head: true })
+      .select("id, workflows!inner(workspace_id)", { count: "exact", head: true })
+      .eq("workflows.workspace_id", workspaceId)
       .gte("started_at", monthStart.toISOString()),
     supabase
       .from("executions")
-      .select("id", { count: "exact", head: true })
+      .select("id, workflows!inner(workspace_id)", { count: "exact", head: true })
+      .eq("workflows.workspace_id", workspaceId)
       .eq("status", "failed")
       .gte("started_at", monthStart.toISOString()),
     supabase
       .from("usage_records")
       .select("quantity", { count: "exact", head: true })
+      .eq("workspace_id", workspaceId)
       .eq("usage_type", "ai_generation")
       .gte("recorded_at", monthStart.toISOString()),
   ]);
 
   return {
     workflows: wfCount.count ?? 0,
-    activeWorkflows: 0,
+    activeWorkflows: activeCount.count ?? 0,
     executionsThisMonth: execCount.count ?? 0,
     failedExecutionsThisMonth: failCount.count ?? 0,
     aiGenerationsThisMonth: aiCount.count ?? 0,

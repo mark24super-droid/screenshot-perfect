@@ -14,10 +14,12 @@ import { EXECUTION_STATUS_LABELS, EXECUTION_STATUS_TONE, formatDuration } from "
 import { NODE_SPECS, type NodeType } from "@/lib/workflow-schema";
 
 export const Route = createFileRoute("/_authenticated/history")({
-  validateSearch: (search: Record<string, unknown>) => ({
-    executionId: typeof search.executionId === "string" ? search.executionId : undefined,
-    status: typeof search.status === "string" ? search.status : undefined,
-  }),
+  validateSearch: (search: Record<string, unknown>): { executionId?: string; status?: string } => {
+    const out: { executionId?: string; status?: string } = {};
+    if (typeof search["executionId"] === "string") out.executionId = search["executionId"];
+    if (typeof search["status"] === "string") out.status = search["status"];
+    return out;
+  },
   head: () => ({
     meta: [
       { title: "Activity History — FlowMate AI" },
@@ -65,7 +67,7 @@ function HistoryPage() {
         toast.error(first?.message ?? res.limitError ?? "The workflow has problems to fix first.");
         return;
       }
-      toast.success(`Retried as simulation: ${res.status.replace("_", " ")}.`);
+      toast.success(`Retried as simulation: ${res.status?.replace("_", " ") ?? "completed"}.`);
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Retry failed."),
   });
@@ -111,7 +113,7 @@ function HistoryPage() {
             <Link
               key={e.id}
               to="/history"
-              search={executionId === e.id ? { status: activeStatus === "all" ? undefined : activeStatus } : { executionId: e.id }}
+              search={executionId === e.id ? (activeStatus === "all" ? {} : { status: activeStatus }) : { executionId: e.id }}
               className={`flex items-center gap-3 rounded-xl border bg-card px-4 py-3 text-sm transition-colors hover:border-primary/40 ${
                 executionId === e.id ? "border-primary/60 bg-accent/20" : "border-border"
               }`}

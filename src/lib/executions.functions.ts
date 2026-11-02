@@ -1,8 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { workflowDefinitionSchema, validateWorkflow, type WorkflowDefinition } from "@/lib/workflow-schema";
-import { runWorkflow, sanitize, type EngineStepResult } from "@/lib/engine.server";
+import { normalizeWorkflowDefinition, validateWorkflow, type WorkflowDefinition } from "@/lib/workflow-schema";
+import { runWorkflow, sanitize, type EngineStepResult, type NodeRunOutput } from "@/lib/engine.server";
 import { getPlan } from "@/lib/plans";
 import { getUsageSnapshot, recordUsage } from "@/lib/usage.server";
 
@@ -21,7 +21,10 @@ async function requireWorkspace(context: Ctx) {
   return workspace;
 }
 
-async function connectedIntegrations(supabase: Ctx["supabase"], userId: string): Promise<("google_mail" | "google_sheets")[]> {
+async function connectedIntegrations(
+  supabase: Ctx["supabase"],
+  userId: string,
+): Promise<("google_mail" | "google_sheets")[]> {
   const { data } = await supabase
     .from("integrations")
     .select("provider, status")
@@ -39,27 +42,149 @@ async function loadDefinition(supabase: Ctx["supabase"], workflowId: string): Pr
     .limit(1)
     .single();
   if (error || !version) throw new Error("Save the workflow first — there is no saved version to run yet.");
-  return workflowDefinitionSchema.parse(version.definition);
+  return normalizeWorkflowDefinition(version.definition);
 }
 
-async function recordSteps(
-  supabase: Ctx["supabase"],
-  executionId: string,
-) {
-  return async (node: { id: string; type: string }, result: { status: string; output: Record<string, unknown>; errorCode?: string; errorMessage?: string }, durationMs: number) => {
+/** Persists each node result as it completes so the UI can show live progress. */
+function stepRecorder(supabase: Ctx["supabase"], executionId: string) {
+  return async (
+    node: { id: string; type: string },
+    result: NodeRunOutput,
+    durationMs: number,
+    input: Record<string, unknown>,
+    attempts: number,
+  ) => {
+    // The database enum has no "skipped" member. "cancelled" is the honest
+    // persisted equivalent: the step was deliberately not executed.
+    const persistedStatus = result.status === "skipped" ? "cancelled" : result.status;
     await supabase.from("execution_steps").insert({
       execution_id: executionId,
       node_id: node.id,
       node_type: node.type,
-      status: result.status,
+      status: persistedStatus,
       started_at: new Date(Date.now() - durationMs).toISOString(),
       finished_at: new Date().toISOString(),
       duration_ms: durationMs,
-      input: null,
+      input: sanitize(input),
       output: sanitize(result.output),
       error_code: result.errorCode ?? null,
-      error_message: result.errorMessage ?? null,
+      error_message:
+        attempts > 1 && result.errorMessage
+          ? `${result.errorMessage} (tried ${attempts} times)`
+          : result.errorMessage ?? null,
     });
+  };
+}
+
+interface ExecuteInput {
+  workflowId: string;
+  mode: "simulation" | "live";
+  sampleInput?: Record<string, any> | undefined;
+}
+
+async function executeSavedWorkflow(
+  context: Ctx,
+  input: ExecuteInput,
+): Promise<{
+  ok: boolean;
+  validation: ReturnType<typeof validateWorkflow>;
+  executionId: string | null;
+  status?: string | undefined;
+  steps?: EngineStepResult[] | undefined;
+  mode: "simulation" | "live";
+  limitError?: string | undefined;
+}> {
+  const supabase = context.supabase;
+  const userId = context.userId;
+  const workspace = await requireWorkspace(context);
+
+  const { data: workflow } = await supabase
+    .from("workflows")
+    .select("id, name, status")
+    .eq("id", input.workflowId)
+    .eq("workspace_id", workspace.id)
+    .single();
+  if (!workflow) throw new Error("Workflow not found.");
+
+  const { data: latestVersion } = await supabase
+    .from("workflow_versions")
+    .select("id")
+    .eq("workflow_id", input.workflowId)
+    .order("version", { ascending: false })
+    .limit(1)
+    .single();
+
+  const definition = await loadDefinition(supabase, input.workflowId);
+  const connected = await connectedIntegrations(supabase, userId);
+  // Simulations must be possible before any account is connected; live runs
+  // are blocked unless every required integration is actually connected.
+  const issues = validateWorkflow(definition, {
+    connectedIntegrations: connected,
+    requireIntegrations: input.mode === "live",
+  });
+  const blocking = issues.filter((i) => i.level === "error");
+  if (blocking.length > 0) {
+    return { ok: false, validation: issues, executionId: null, mode: input.mode };
+  }
+
+  const plan = getPlan("free");
+  const usage = await getUsageSnapshot(supabase, workspace.id, plan.limits);
+  if (usage.executionsThisMonth >= usage.limitMonthlyExecutions) {
+    return {
+      ok: false,
+      validation: [],
+      executionId: null,
+      mode: input.mode,
+      limitError: `You've used all ${usage.limitMonthlyExecutions} executions for this month on the ${plan.name} plan. Upgrade for a higher allowance.`,
+    };
+  }
+
+  const { data: execution, error: execError } = await supabase
+    .from("executions")
+    .insert({
+      workflow_id: input.workflowId,
+      workflow_version_id: latestVersion?.id ?? null,
+      status: "running",
+      mode: input.mode,
+      trigger_payload: input.sampleInput ? sanitize(input.sampleInput) : null,
+    })
+    .select("id")
+    .single();
+  if (execError || !execution) throw new Error(execError?.message ?? "Could not start the execution.");
+
+  const engineResult = await runWorkflow(
+    definition,
+    { mode: input.mode, userId, outputs: {}, input: input.sampleInput },
+    stepRecorder(supabase, execution.id),
+  );
+
+  const finalStatus =
+    engineResult.status === "succeeded"
+      ? "succeeded"
+      : engineResult.status === "partially_succeeded"
+        ? "partially_succeeded"
+        : "failed";
+
+  const { error: updateError } = await supabase
+    .from("executions")
+    .update({
+      status: finalStatus,
+      finished_at: new Date().toISOString(),
+      duration_ms: engineResult.steps.reduce((a, s) => a + s.durationMs, 0),
+      error_summary: engineResult.errorSummary,
+    })
+    .eq("id", execution.id);
+  if (updateError) console.error("execution update failed", updateError.message);
+
+  await recordUsage(supabase, workspace.id, "execution");
+
+  return {
+    ok: true,
+    validation: issues,
+    executionId: execution.id as string,
+    status: finalStatus,
+    steps: engineResult.steps,
+    mode: input.mode,
   };
 }
 
@@ -70,79 +195,16 @@ export const runWorkflowTest = createServerFn({ method: "POST" })
       .object({
         workflowId: z.string().uuid(),
         mode: z.enum(["simulation", "live"]).default("simulation"),
+        sampleInput: z.record(z.string(), z.unknown()).optional(),
       })
       .parse(input),
   )
   .handler(async ({ data, context }) => {
-    const supabase = (context as Ctx).supabase;
-    const userId = (context as Ctx).userId;
-    const workspace = await requireWorkspace(context as Ctx);
-
-    const { data: workflow } = await supabase
-      .from("workflows")
-      .select("id, name, status")
-      .eq("id", data.workflowId)
-      .eq("workspace_id", workspace.id)
-      .single();
-    if (!workflow) throw new Error("Workflow not found.");
-
-    const definition = await loadDefinition(supabase, data.workflowId);
-    const connected = await connectedIntegrations(supabase, userId);
-    const issues = validateWorkflow(definition, { connectedIntegrations: connected });
-    const blocking = issues.filter((i) => i.level === "error");
-    if (blocking.length > 0) {
-      return { ok: false as const, validation: issues, executionId: null as string | null };
-    }
-
-    const plan = getPlan("free");
-    const usage = await getUsageSnapshot(supabase, workspace.id, plan.limits);
-    if (usage.executionsThisMonth >= usage.limitMonthlyExecutions) {
-      return {
-        ok: false as const,
-        validation: [],
-        executionId: null as string | null,
-        limitError: `You've used all ${usage.limitMonthlyExecutions} executions for this month on the ${plan.name} plan. Upgrade for a higher allowance.`,
-      };
-    }
-
-    const { data: execution, error: execError } = await supabase
-      .from("executions")
-      .insert({ workflow_id: data.workflowId, status: "running", mode: data.mode })
-      .select("id")
-      .single();
-    if (execError || !execution) throw new Error(execError?.message ?? "Could not start the execution.");
-
-    const record = await recordSteps(supabase, execution.id);
-    const engineResult = await runWorkflow(definition, { mode: data.mode, userId, outputs: {} }, record);
-
-    const finalStatus =
-      engineResult.status === "succeeded"
-        ? "succeeded"
-        : engineResult.status === "partially_succeeded"
-          ? "partially_succeeded"
-          : "failed";
-
-    const { error: updateError } = await supabase
-      .from("executions")
-      .update({
-        status: finalStatus,
-        finished_at: new Date().toISOString(),
-        duration_ms: engineResult.steps.reduce((a, s) => a + s.durationMs, 0),
-        error_summary: engineResult.errorSummary,
-      })
-      .eq("id", execution.id);
-    if (updateError) console.error("execution update failed", updateError.message);
-
-    await recordUsage(supabase, workspace.id, "execution");
-
-    return {
-      ok: true as const,
-      validation: issues,
-      executionId: execution.id as string,
-      status: finalStatus,
-      steps: engineResult.steps,
+    return executeSavedWorkflow(context as Ctx, {
+      workflowId: data.workflowId,
       mode: data.mode,
-    };
+      sampleInput: data.sampleInput,
+    });
   });
 
 export const listExecutions = createServerFn({ method: "GET" })
@@ -162,7 +224,10 @@ export const listExecutions = createServerFn({ method: "GET" })
     const supabase = (context as Ctx).supabase;
     let query = supabase
       .from("executions")
-      .select("id, workflow_id, status, mode, started_at, finished_at, duration_ms, error_summary, workflows(name)")
+      .select(
+        "id, workflow_id, status, mode, started_at, finished_at, duration_ms, error_summary, workflows!inner(name, workspace_id)",
+      )
+      .eq("workflows.workspace_id", workspace.id)
       .order("started_at", { ascending: false })
       .range(data.page * data.pageSize, (data.page + 1) * data.pageSize - 1);
     if (data.status !== "all") query = query.eq("status", data.status);
@@ -194,18 +259,19 @@ export const getExecution = createServerFn({ method: "GET" })
     const supabase = (context as Ctx).supabase;
     const { data: execution } = await supabase
       .from("executions")
-      .select("id, workflow_id, workflow_version_id, status, mode, started_at, finished_at, duration_ms, error_summary, workflows(name)")
+      .select(
+        "id, workflow_id, workflow_version_id, status, mode, trigger_payload, started_at, finished_at, duration_ms, error_summary, workflows!inner(name, workspace_id)",
+      )
       .eq("id", data.id)
       .single();
     if (!execution) throw new Error("Execution not found.");
 
     const wf = Array.isArray(execution.workflows) ? execution.workflows[0] : execution.workflows;
-    const { data: wfRow } = await supabase.from("workflows").select("workspace_id").eq("id", execution.workflow_id).single();
-    if (!wfRow || wfRow.workspace_id !== workspace.id) throw new Error("Execution not found.");
+    if (!wf || wf.workspace_id !== workspace.id) throw new Error("Execution not found.");
 
     const { data: steps } = await supabase
       .from("execution_steps")
-      .select("id, node_id, node_type, status, started_at, finished_at, duration_ms, output, error_code, error_message")
+      .select("id, node_id, node_type, status, started_at, finished_at, duration_ms, input, output, error_code, error_message")
       .eq("execution_id", execution.id)
       .order("started_at", { ascending: true, nullsFirst: false });
 
@@ -215,6 +281,7 @@ export const getExecution = createServerFn({ method: "GET" })
       workflowName: wf?.name ?? "Unknown workflow",
       status: execution.status,
       mode: execution.mode,
+      triggerPayload: execution.trigger_payload,
       startedAt: execution.started_at,
       finishedAt: execution.finished_at,
       durationMs: execution.duration_ms,
@@ -225,6 +292,7 @@ export const getExecution = createServerFn({ method: "GET" })
         nodeType: s.node_type,
         status: s.status,
         durationMs: s.duration_ms,
+        input: s.input,
         output: s.output,
         errorCode: s.error_code,
         errorMessage: s.error_message,
@@ -237,17 +305,26 @@ export const retryExecution = createServerFn({ method: "POST" })
   .inputValidator((input) => z.object({ executionId: z.string().uuid() }).parse(input))
   .handler(async ({ data, context }) => {
     const supabase = (context as Ctx).supabase;
+    const workspace = await requireWorkspace(context as Ctx);
     const { data: execution } = await supabase
       .from("executions")
-      .select("id, workflow_id")
+      .select("id, workflow_id, mode, trigger_payload, workflows!inner(workspace_id)")
       .eq("id", data.executionId)
       .single();
     if (!execution) throw new Error("Execution not found.");
+    const wf = Array.isArray(execution.workflows) ? execution.workflows[0] : execution.workflows;
+    if (!wf || wf.workspace_id !== workspace.id) throw new Error("Execution not found.");
 
-    // Re-run against the same workflow's latest saved version (retry runs the
-    // current definition — it never invents state from the old run).
-    const result = await runWorkflowTest({ data: { workflowId: execution.workflow_id, mode: "simulation" }, context: context as never });
-    return result;
+    // Retry uses the same mode and payload as the original run, against the
+    // latest saved definition. It never invents state from the old execution.
+    return executeSavedWorkflow(context as Ctx, {
+      workflowId: execution.workflow_id,
+      mode: execution.mode === "live" ? "live" : "simulation",
+      sampleInput:
+        execution.trigger_payload && typeof execution.trigger_payload === "object"
+          ? (execution.trigger_payload as Record<string, unknown>)
+          : undefined,
+    });
   });
 
 export type { EngineStepResult };

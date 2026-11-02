@@ -1,7 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { Link, useNavigate, createFileRoute } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
   Workflow as WorkflowIcon,
@@ -119,12 +118,16 @@ function DashboardPage() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Total automations" value={usage.workflows} sub={`Limit: ${usage.limitWorkflows} on ${data.planName}`} />
         <StatCard
+          label="Active automations"
+          value={usage.activeWorkflows}
+          sub={usage.activeWorkflows === 1 ? "1 workflow is live" : `${usage.activeWorkflows} workflows are live`}
+        />
+        <StatCard
           label="Executions this month"
           value={usage.executionsThisMonth}
           sub={`Limit: ${usage.limitMonthlyExecutions} per month`}
         />
         <StatCard label="Failed executions" value={usage.failedExecutionsThisMonth} sub="This month" tone="error" />
-        <StatCard label="AI generations" value={usage.aiGenerationsThisMonth} sub={`Limit: ${usage.limitAiGenerations} per month`} />
       </div>
 
       {usage.executionsThisMonth >= usage.limitMonthlyExecutions && (

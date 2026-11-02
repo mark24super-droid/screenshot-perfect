@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
+import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { getMyProfile } from "@/lib/profile.functions";
 import { getPlan } from "@/lib/plans";
@@ -59,7 +60,7 @@ function ProfilePage() {
     setPasswordOpen(false);
     setCurrentPassword("");
     setNewPassword("");
-    void 0;
+    toast.success("Password updated.");
   }
 
   const name = data?.profile.displayName ?? "";

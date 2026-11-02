@@ -101,9 +101,19 @@ function IntegrationsPage() {
       const completion = waitForOAuthCompletion(popup);
       popup.location.href = start.authorizationUrl;
       const code = await completion;
+      if (!code) {
+        toast.error(
+          "Google did not grant offline access, so no credential was stored. Reconnect and accept all requested permissions.",
+        );
+        return;
+      }
       // Exchange here — the popup has no app session in the embedded preview.
-      if (code) await complete({ data: { code } });
-      toast.success("Connected. Your workflows can now use this integration.");
+      const completed = await complete({ data: { code } });
+      if (!completed.connected) {
+        toast.error(completed.message ?? "The connection could not be verified. Reconnect and accept all permissions.");
+      } else {
+        toast.success("Connected. Your workflows can now use this integration.");
+      }
     } catch (err) {
       popup.close();
       toast.error(err instanceof Error ? err.message : "Could not complete the connection.");
