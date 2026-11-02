@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useSearch } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
@@ -34,6 +34,7 @@ export const Route = createFileRoute("/_authenticated/history")({
 const STATUS_FILTERS = ["all", "succeeded", "failed", "partially_succeeded"] as const;
 
 function HistoryPage() {
+  const navigate = useNavigate();
   const { executionId, status } = useSearch({ from: "/_authenticated/history" });
   const fetchExecutions = useServerFn(listExecutions);
   const fetchExecution = useServerFn(getExecution);
@@ -141,7 +142,12 @@ function HistoryPage() {
       )}
 
       {/* Execution detail sheet */}
-      <Sheet open={!!executionId} onOpenChange={(open) => !open && void 0}>
+      <Sheet
+        open={!!executionId}
+        onOpenChange={(open) => {
+          if (!open) navigate({ to: "/history", search: activeStatus === "all" ? {} : { status: activeStatus } });
+        }}
+      >
         <SheetContent className="w-full overflow-y-auto sm:max-w-lg">
           <SheetHeader>
             <Button variant="ghost" size="sm" className="w-fit" asChild>
