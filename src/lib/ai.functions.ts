@@ -318,12 +318,9 @@ export const generateWorkflow = createServerFn({ method: "POST" })
       .limit(1)
       .single();
     if (wsError || !workspace) throw new Error("No workspace found for this account.");
-    // AI is optional: without a provider we return a deterministic starter
-    // plan instead of failing, clearly labelled as demo output.
-    if (!isAiConfigured()) {
-      return { ok: true, plan: buildDemoPlan(data.prompt) };
-    }
-
+    // AI is optional; usage metering is not. The limit applies to demo plans
+    // and real generations alike — demo plans cost no provider tokens but are
+    // still product usage, and metering both keeps counters unambiguous.
     const plan = getPlan("free");
     const usage = await getUsageSnapshot(supabase, workspace.id, plan.limits);
     if (usage.aiGenerationsThisMonth >= usage.limitAiGenerations) {
@@ -331,6 +328,13 @@ export const generateWorkflow = createServerFn({ method: "POST" })
         ok: false,
         error: `You've reached your monthly limit of ${usage.limitAiGenerations} AI generations on the ${plan.name} plan. Upgrade for a higher allowance, or start from a template.`,
       };
+    }
+    // One generation exactly once per successful response — failed attempts
+    // (provider errors, unreadable or invalid plans) are never metered, so
+    // retries cannot double-count.
+    if (!isAiConfigured()) {
+      await recordUsage(supabase, workspace.id, "ai_generation", 1);
+      return { ok: true, plan: buildDemoPlan(data.prompt) };
     }
 
     const nodeCatalogue = NODE_TYPES.map((t) => {
@@ -369,7 +373,10 @@ Rules:
         // Misconfiguration is recoverable: hand the user a demo plan instead
         // of a dead end, and label it honestly.
         if ([401, 403, 404].includes(err.status)) {
+          // Same metering as the configured path: this must-read demo plan
+          // counts exactly once, like any other successful generation.
           const demo = buildDemoPlan(data.prompt);
+          await recordUsage(supabase, workspace.id, "ai_generation", 1);
           return {
             ok: true,
             plan: { ...demo, explanation: `${err.safeMessage} ${demo.explanation}` },

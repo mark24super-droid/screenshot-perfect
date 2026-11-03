@@ -92,7 +92,6 @@ function toFlowEdge(edge: WorkflowDefinition["edges"][number]): Edge {
     source: edge.source,
     target: edge.target,
     type: "smoothstep",
-    animated: true,
   };
 }
 
@@ -221,7 +220,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           source: connection.source,
           target: connection.target,
           type: "smoothstep",
-          animated: true,
         },
       ],
       dirty: true,
@@ -245,7 +243,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         source: anchor.id,
         target: id,
         type: "smoothstep",
-        animated: true,
       });
     }
     set({

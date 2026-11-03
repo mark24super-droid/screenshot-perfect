@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
@@ -63,6 +63,15 @@ function TemplatesPage() {
       {isLoading ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {[...Array(6)].map((_, i) => <Skeleton key={i} className="h-44" />)}
+        </div>
+      ) : !error && (data ?? []).length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border bg-card p-10 text-center">
+          <Zap className="mx-auto h-8 w-8 text-muted-foreground" />
+          <p className="mt-2 text-sm font-medium">No templates available right now</p>
+          <p className="text-xs text-muted-foreground">You can still create an automation from scratch — describe what you want to automate.</p>
+          <Button size="sm" variant="outline" className="mt-3" asChild>
+            <Link to="/automations/new">Create Automation</Link>
+          </Button>
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

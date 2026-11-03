@@ -10,14 +10,32 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { EXECUTION_STATUS_LABELS, EXECUTION_STATUS_TONE, formatDuration } from "@/lib/status";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { EXECUTION_STATUS_LABELS, EXECUTION_STATUS_TONE, formatDuration, retryLabelFor } from "@/lib/status";
 import { NODE_SPECS, type NodeType } from "@/lib/workflow-schema";
 
 export const Route = createFileRoute("/_authenticated/history")({
   validateSearch: (search: Record<string, unknown>): { executionId?: string; status?: string } => {
     const out: { executionId?: string; status?: string } = {};
-    if (typeof search["executionId"] === "string") out.executionId = search["executionId"];
-    if (typeof search["status"] === "string") out.status = search["status"];
+    // Client-side validation mirrors the server zod schemas: unknown filter
+    // values fall back to "all" and malformed execution ids are dropped
+    // instead of opening an error page.
+    const executionId = typeof search["executionId"] === "string" ? search["executionId"] : undefined;
+    if (executionId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(executionId)) {
+      out.executionId = executionId;
+    }
+    const status = typeof search["status"] === "string" ? search["status"] : undefined;
+    if (status && (STATUS_FILTERS as readonly string[]).includes(status)) out.status = status;
     return out;
   },
   head: () => ({
@@ -43,7 +61,7 @@ function HistoryPage() {
   const retry = useServerFn(retryExecution);
   const queryClient = useQueryClient();
 
-  const activeStatus = (status as (typeof STATUS_FILTERS)[number] | undefined) ?? "all";
+  const activeStatus = status ?? "all";
   const executions = useQuery({
     queryKey: ["executions", activeStatus],
     queryFn: () => fetchExecutions({ data: { status: activeStatus, page: 0, pageSize: 30 } }),
@@ -67,7 +85,11 @@ function HistoryPage() {
         toast.error(first?.message ?? res.limitError ?? "The workflow has problems to fix first.");
         return;
       }
-      toast.success(`Retried as simulation: ${res.status?.replace("_", " ") ?? "completed"}.`);
+      // Say the mode that actually ran — a live retry is never reported as a
+      // simulation. The server persists this exact mode on the new execution.
+      toast.success(
+        `${res.mode === "live" ? "Live execution" : "Simulation"} retry finished: ${res.status?.replace("_", " ") ?? "completed"}.`,
+      );
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Retry failed."),
   });
@@ -157,6 +179,19 @@ function HistoryPage() {
                 <ArrowLeft className="h-4 w-4" /> Back to history
               </Link>
             </Button>
+            {detail.isError && (
+              <div className="mt-2 rounded-lg border border-border bg-surface-muted p-4 text-center text-sm text-muted-foreground">
+                This execution could not be opened — it may have been deleted.
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-3"
+                  onClick={() => navigate({ to: "/history", search: activeStatus === "all" ? {} : { status: activeStatus } })}
+                >
+                  Back to history
+                </Button>
+              </div>
+            )}
             {detail.isLoading && <Skeleton className="h-24 w-full" />}
             {detail.data && (
               <>
@@ -209,16 +244,44 @@ function HistoryPage() {
                         )}
                       </div>
                     ))}
-                    {detail.data.status === "failed" && (
-                      <Button
-                        variant="outline"
-                        className="w-full"
-                        onClick={() => retryMutation.mutate(detail.data!.id)}
-                        disabled={retryMutation.isPending}
-                      >
-                        <RotateCcw className="h-4 w-4" /> Retry (simulation)
-                      </Button>
-                    )}
+                    {detail.data.status === "failed" &&
+                      (detail.data.mode === "live" ? (
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button variant="outline" className="w-full" disabled={retryMutation.isPending}>
+                              <RotateCcw className="h-4 w-4" /> {retryLabelFor("live")}
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Retry live execution?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This reruns the workflow in live mode with the original input, so the original
+                                external actions may happen again — emails can be re-sent and spreadsheets can
+                                receive duplicate rows. Simulations never touch your connected accounts.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction
+                                onClick={() => retryMutation.mutate(detail.data!.id)}
+                                className="bg-error text-white hover:bg-error/90"
+                              >
+                                Run it again live
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          className="w-full"
+                          onClick={() => retryMutation.mutate(detail.data!.id)}
+                          disabled={retryMutation.isPending}
+                        >
+                          <RotateCcw className="h-4 w-4" /> {retryLabelFor("simulation")}
+                        </Button>
+                      ))}
                   </CardContent>
                 </Card>
               </>

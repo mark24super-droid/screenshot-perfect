@@ -51,7 +51,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { WORKFLOW_STATUS_LABELS, STATUS_TONE, formatDuration } from "@/lib/status";
+import { WORKFLOW_STATUS_LABELS, STATUS_TONE } from "@/lib/status";
 import { NODE_SPECS, type NodeType } from "@/lib/workflow-schema";
 
 export const Route = createFileRoute("/_authenticated/automations/")({
@@ -220,7 +220,6 @@ function AutomationsPage() {
                   {WORKFLOW_STATUS_LABELS[wf.status] ?? wf.status}
                 </Badge>
                 <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">
-                  {formatDuration(null)}
                   {wf.updatedAt && new Date(wf.updatedAt).toLocaleDateString()}
                 </span>
                 <DropdownMenu>

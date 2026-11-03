@@ -15,10 +15,20 @@ export interface UsageSnapshot {
   limitAiGenerations: number;
 }
 
+/**
+ * First moment of the current UTC month. Must stay identical to the database
+ * window used by migration 0001 (`date_trunc('month', now())`, UTC) so the two
+ * sides of the quota checks count the same period.
+ */
+export function monthStartUtc(now: Date = new Date()): Date {
+  const d = new Date(now.getTime());
+  d.setUTCDate(1);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
+
 export async function getUsageSnapshot(supabase: Db, workspaceId: string, planLimits: { workflows: number; monthlyExecutions: number; aiGenerations: number }): Promise<UsageSnapshot> {
-  const monthStart = new Date();
-  monthStart.setUTCDate(1);
-  monthStart.setUTCHours(0, 0, 0, 0);
+  const monthStart = monthStartUtc();
 
   const [wfCount, activeCount, execCount, failCount, aiCount] = await Promise.all([
     supabase.from("workflows").select("id", { count: "exact", head: true }).eq("workspace_id", workspaceId),
@@ -59,6 +69,21 @@ export async function getUsageSnapshot(supabase: Db, workspaceId: string, planLi
 }
 
 export async function recordUsage(supabase: Db, workspaceId: string, usageType: string, quantity = 1) {
-  const { error } = await supabase.from("usage_records").insert({ workspace_id: workspaceId, usage_type: usageType, quantity });
+  // Usage rows can no longer be written as plain rows by clients (migration
+  // 0001 revokes INSERT for authenticated); this trusted RPC is the single
+  // writer. The generated Database type picks up `record_usage` on the next
+  // `supabase gen types` run — until then a minimal structural cast keeps the
+  // call site type-checked.
+  const rpc = supabase as unknown as {
+    rpc: (
+      name: "record_usage",
+      args: { _workspace_id: string; _usage_type: string; _quantity: number },
+    ) => Promise<{ error: { message: string } | null }>;
+  };
+  const { error } = await rpc.rpc("record_usage", {
+    _workspace_id: workspaceId,
+    _usage_type: usageType,
+    _quantity: quantity,
+  });
   if (error) console.error("usage record failed", error.message);
 }

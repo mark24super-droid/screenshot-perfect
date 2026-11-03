@@ -47,7 +47,7 @@ function BillingPage() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-medium">Current plan</div>
-                <div className="text-2xl font-bold">{data?.planName ?? "Free"}</div>
+                <div className="text-2xl font-semibold">{data?.planName ?? "Free"}</div>
               </div>
               <Badge variant="outline">Active</Badge>
             </div>
@@ -76,7 +76,7 @@ function BillingPage() {
                 {(data?.planName ?? "Free") === plan.name && <Badge className="bg-success/15 text-success hover:bg-success/15">Current</Badge>}
               </div>
               <div className="mt-2 flex items-baseline gap-1">
-                <span className="text-3xl font-bold">{plan.priceLabel}</span>
+                <span className="text-3xl font-semibold">{plan.priceLabel}</span>
                 <span className="text-sm text-muted-foreground">/month</span>
               </div>
               <p className="mt-2 text-sm text-muted-foreground">{plan.tagline}</p>

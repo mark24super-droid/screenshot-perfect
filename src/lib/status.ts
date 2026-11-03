@@ -39,3 +39,18 @@ export function formatDuration(ms: number | null | undefined): string {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
 }
+
+/**
+ * A retry always reruns in the same mode as the original execution: a live run
+ * never silently degrades to simulation, and a simulation never escalates to
+ * live. Anything unknown is treated as the safe default (simulation). The UI
+ * surfaces the decision through retryLabelFor and a live-mode confirmation.
+ */
+export function retryModeFor(originalMode: string | null | undefined): "simulation" | "live" {
+  return originalMode === "live" ? "live" : "simulation";
+}
+
+/** Honest label for a retry action — never mislabels a live retry as simulation. */
+export function retryLabelFor(mode: "simulation" | "live"): string {
+  return mode === "live" ? "Retry live execution" : "Retry simulation";
+}

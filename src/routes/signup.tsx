@@ -43,7 +43,8 @@ function SignupPage() {
       email,
       password,
       options: {
-        emailRedirectTo: window.location.origin,
+        // The confirmation link should land on onboarding, not the marketing root.
+        emailRedirectTo: `${window.location.origin}/onboarding`,
         data: { name },
       },
     });

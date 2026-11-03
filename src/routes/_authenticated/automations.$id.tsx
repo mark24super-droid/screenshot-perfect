@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import {
@@ -26,6 +26,7 @@ import {
   Map as MapIcon,
   Maximize2,
   Minus,
+  PanelLeft,
   PanelRight,
   Pause,
   Play,
@@ -39,10 +40,11 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { getWorkflow, saveWorkflow, setWorkflowStatus } from "@/lib/workflows.functions";
-import { validateWorkflow, NODE_SPECS, type WorkflowDefinition } from "@/lib/workflow-schema";
+import { validateWorkflow, NODE_SPECS, NODE_TYPES, type WorkflowDefinition, type NodeType } from "@/lib/workflow-schema";
 import { useEditorStore, type FlowNode } from "@/components/editor/editor-store";
 import { FlowNodeCardMemo } from "@/components/editor/flow-node";
 import { Inspector } from "@/components/editor/inspector";
+import { NodePalette, NODE_DRAG_MIME } from "@/components/editor/node-palette";
 import { NodePicker } from "@/components/editor/node-picker";
 import { TestPanel } from "@/components/editor/test-panel";
 import { Button } from "@/components/ui/button";
@@ -142,6 +144,8 @@ function EditorPage({ workflowId }: { workflowId: string }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
+  // Left palette drawer for tablet/mobile; desktop uses the persistent aside.
+  const [paletteSheetOpen, setPaletteSheetOpen] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [minimapOpen, setMinimapOpen] = useState(true);
@@ -327,6 +331,23 @@ function EditorPage({ workflowId }: { workflowId: string }) {
     [connect],
   );
 
+  // Drop target for nodes dragged out of the left palette.
+  const onCanvasDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes(NODE_DRAG_MIME)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+  const onCanvasDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      const type = event.dataTransfer.getData(NODE_DRAG_MIME) as NodeType | "";
+      if (!type || !NODE_TYPES.includes(type)) return;
+      event.preventDefault();
+      const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      addNode(type, position);
+    },
+    [flow, addNode],
+  );
+
   if (workflowQuery.isLoading || (!data && !workflowQuery.isError)) {
     return (
       <div className="space-y-3 p-6">
@@ -420,6 +441,14 @@ function EditorPage({ workflowId }: { workflowId: string }) {
           <div className="hidden items-center gap-1 md:flex">
             <Button size="sm" variant="outline" className="h-8" onClick={() => setPickerOpen(true)}>
               <Plus className="h-3.5 w-3.5" /> Add step
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 lg:hidden"
+              onClick={() => setPaletteSheetOpen(true)}
+            >
+              <PanelLeft className="h-3.5 w-3.5" /> Steps
             </Button>
             <div className="mx-1 h-5 w-px bg-border" />
             <Tooltip>
@@ -566,6 +595,9 @@ function EditorPage({ workflowId }: { workflowId: string }) {
           <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setPickerOpen(true)}>
             <Plus className="h-3 w-3" /> Add step
           </Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setPaletteSheetOpen(true)}>
+            <PanelLeft className="h-3 w-3" /> Steps
+          </Button>
           <Button
             size="sm"
             variant="ghost"
@@ -580,8 +612,17 @@ function EditorPage({ workflowId }: { workflowId: string }) {
         </div>
 
         <div className="flex min-h-0 flex-1">
+          {/* Left node palette — persistent on desktop (reference design). */}
+          <aside className="hidden w-[236px] shrink-0 border-r border-border bg-[#FAFAFC] lg:block">
+            <NodePalette onPick={(type) => addNode(type)} draggable />
+          </aside>
+
           {/* Canvas */}
-          <div className="relative min-w-0 flex-1 bg-[#FBFBFD]">
+          <div
+            className="relative min-w-0 flex-1 bg-white"
+            onDragOver={onCanvasDragOver}
+            onDrop={onCanvasDrop}
+          >
             <ReactFlow
               nodes={nodes}
               edges={edges}
@@ -613,13 +654,12 @@ function EditorPage({ workflowId }: { workflowId: string }) {
               connectionLineType={ConnectionLineType.SmoothStep}
               defaultEdgeOptions={{
                 type: "smoothstep",
-                animated: true,
-                style: { stroke: "#a7a1f2", strokeWidth: 1.75 },
+                style: { stroke: "#b3b8c6", strokeWidth: 1.5 },
               }}
               proOptions={{ hideAttribution: true }}
               className="[&_.react-flow__pane]:cursor-grab"
             >
-              <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#d8dae5" />
+              <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#dcdfe8" />
               <Controls showInteractive={false} className="!bottom-4 !left-4 !shadow-sm" />
               {minimapOpen && (
                 <MiniMap
@@ -697,6 +737,20 @@ function EditorPage({ workflowId }: { workflowId: string }) {
       </div>
 
       <NodePicker open={pickerOpen} onOpenChange={setPickerOpen} onPick={(type) => addNode(type)} />
+
+      {/* Left palette as drawer / bottom-sheet overlay for tablet and mobile. */}
+      <Sheet open={paletteSheetOpen} onOpenChange={setPaletteSheetOpen}>
+        <SheetContent side="left" className="w-[248px] border-r border-border bg-[#FAFAFC] p-0 sm:max-w-[248px]">
+          <SheetTitle className="sr-only">Step palette</SheetTitle>
+          <NodePalette
+            onPick={(type) => {
+              addNode(type);
+              setPaletteSheetOpen(false);
+            }}
+            draggable
+          />
+        </SheetContent>
+      </Sheet>
 
       <TestPanel
         open={testOpen}

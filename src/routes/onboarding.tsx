@@ -133,7 +133,7 @@ function OnboardingPage() {
             <div key={label} className="flex items-center gap-2">
               <div
                 className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-medium ${
-                  i < step ? "bg-success text-white" : i === step ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+                  i < step ? "bg-success text-success-foreground" : i === step ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
                 }`}
               >
                 {i < step ? <Check className="h-3 w-3" /> : i + 1}

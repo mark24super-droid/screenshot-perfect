@@ -40,8 +40,8 @@ export const NODE_ICONS: Record<NodeType, ComponentType<{ className?: string }>>
 };
 
 export const NODE_TONES: Record<NodeType, string> = {
-  "manual.trigger": "bg-accent text-primary",
-  "schedule.trigger": "bg-accent text-primary",
+  "manual.trigger": "bg-accent text-accent-foreground",
+  "schedule.trigger": "bg-accent text-accent-foreground",
   "gmail.new_email": "bg-info/10 text-info",
   "gmail.send_email": "bg-info/10 text-info",
   "google_sheets.new_row": "bg-success/10 text-success",

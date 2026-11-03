@@ -5,6 +5,7 @@ import { normalizeWorkflowDefinition, validateWorkflow, type WorkflowDefinition 
 import { runWorkflow, sanitize, type EngineStepResult, type NodeRunOutput } from "@/lib/engine.server";
 import { getPlan } from "@/lib/plans";
 import { getUsageSnapshot, recordUsage } from "@/lib/usage.server";
+import { retryModeFor } from "@/lib/status";
 
 type Ctx = { supabase: import("@supabase/supabase-js").SupabaseClient; userId: string; claims: unknown };
 
@@ -315,11 +316,13 @@ export const retryExecution = createServerFn({ method: "POST" })
     const wf = Array.isArray(execution.workflows) ? execution.workflows[0] : execution.workflows;
     if (!wf || wf.workspace_id !== workspace.id) throw new Error("Execution not found.");
 
-    // Retry uses the same mode and payload as the original run, against the
-    // latest saved definition. It never invents state from the old execution.
+    // Retry reruns the same mode and payload as the original run, against the
+    // latest saved definition. It never invents state from the old execution,
+    // never switches mode silently — live retries only start from an explicit
+    // user confirmation — and the new execution record persists this mode.
     return executeSavedWorkflow(context as Ctx, {
       workflowId: execution.workflow_id,
-      mode: execution.mode === "live" ? "live" : "simulation",
+      mode: retryModeFor(execution.mode),
       sampleInput:
         execution.trigger_payload && typeof execution.trigger_payload === "object"
           ? (execution.trigger_payload as Record<string, unknown>)

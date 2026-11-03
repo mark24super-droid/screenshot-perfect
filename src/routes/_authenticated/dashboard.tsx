@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import {
   Workflow as WorkflowIcon,
   CheckCircle2,
-  Play,
   XCircle,
   Plus,
   ArrowRight,
@@ -17,13 +16,12 @@ import {
   Clock,
 } from "lucide-react";
 import { getDashboardSummary, instantiateTemplate } from "@/lib/workflows.functions";
-import { PageHeader } from "@/components/flowmate/page-header";
+import { getMyProfile } from "@/lib/profile.functions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { getPlan } from "@/lib/plans";
 import { WORKFLOW_STATUS_LABELS, STATUS_TONE } from "@/lib/status";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
@@ -40,28 +38,55 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
   component: DashboardPage,
 });
 
-function StatCard({ label, value, sub, tone }: { label: string; value: React.ReactNode; sub?: string; tone?: "default" | "error" }) {
+function StatCard({
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  label: string;
+  value: React.ReactNode;
+  sub?: string;
+  tone?: "default" | "error";
+}) {
+  const isError = tone === "error";
   return (
     <Card>
       <CardContent className="p-5">
         <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-          {tone === "error" ? <XCircle className="h-3.5 w-3.5 text-error" /> : <CheckCircle2 className="h-3.5 w-3.5 text-success" />}
+          {isError ? <XCircle className="h-3.5 w-3.5 text-error" /> : <CheckCircle2 className="h-3.5 w-3.5 text-success" />}
           {label}
         </div>
-        <div className="mt-2 text-2xl font-bold tabular-nums">{value}</div>
+        <div
+          className={`mt-2 text-2xl font-semibold tabular-nums tracking-tight ${
+            isError && Number(value) > 0 ? "text-error" : ""
+          }`}
+        >
+          {value}
+        </div>
         {sub && <div className="mt-1 text-xs text-muted-foreground">{sub}</div>}
       </CardContent>
     </Card>
   );
 }
 
+function greetingForNow() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
 function DashboardPage() {
   const fetchSummary = useServerFn(getDashboardSummary);
+  const fetchProfile = useServerFn(getMyProfile);
   const instantiate = useServerFn(instantiateTemplate);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
   const { data, isLoading, error } = useQuery({ queryKey: ["dashboard"], queryFn: fetchSummary, retry: 1 });
+  // Shared with the profile/settings pages — same key, no duplicate fetch.
+  const { data: profileData } = useQuery({ queryKey: ["profile"], queryFn: fetchProfile, retry: 1 });
 
   const useTemplate = useMutation({
     mutationFn: (slug: string) => instantiate({ data: { slug } }),
@@ -76,8 +101,8 @@ function DashboardPage() {
 
   if (isLoading) {
     return (
-      <div className="mx-auto max-w-6xl space-y-6 p-6">
-        <Skeleton className="h-8 w-64" />
+      <div className="mx-auto max-w-6xl space-y-6 p-4 sm:p-6">
+        <Skeleton className="h-8 w-72" />
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {[...Array(4)].map((_, i) => <Skeleton key={i} className="h-24" />)}
         </div>
@@ -88,7 +113,7 @@ function DashboardPage() {
 
   if (error || !data) {
     return (
-      <div className="mx-auto max-w-6xl p-6">
+      <div className="mx-auto max-w-6xl p-4 sm:p-6">
         <Alert variant="destructive">
           <AlertTriangle className="h-4 w-4" />
           <AlertTitle>The dashboard could not load</AlertTitle>
@@ -99,24 +124,31 @@ function DashboardPage() {
   }
 
   const usage = data.usage;
-  const plan = getPlan("free");
+  const displayName = (profileData?.profile.displayName ?? "").trim();
+  const firstName = displayName.split(/\s+/)[0] ?? "";
+  const greeting = firstName ? `${greetingForNow()}, ${firstName}` : greetingForNow();
+  const failures = usage.failedExecutionsThisMonth;
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <PageHeader
-        title="Dashboard"
-        subtitle={`Welcome back — here's what's happening with your automations.`}
-        action={
-          <Button asChild>
-            <Link to="/automations/new">
-              <Plus className="h-4 w-4" /> Create Automation
-            </Link>
-          </Button>
-        }
-      />
+    <div className="mx-auto max-w-6xl space-y-6 p-4 sm:p-6">
+      {/* Header */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">{greeting}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Here's where your {data.planName} workspace stands today.
+          </p>
+        </div>
+        <Button asChild>
+          <Link to="/automations/new">
+            <Plus className="h-4 w-4" /> Create Automation
+          </Link>
+        </Button>
+      </div>
 
+      {/* Key metrics */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Total automations" value={usage.workflows} sub={`Limit: ${usage.limitWorkflows} on ${data.planName}`} />
+        <StatCard label="Total automations" value={usage.workflows} sub={`Limit ${usage.limitWorkflows} · ${data.planName} plan`} />
         <StatCard
           label="Active automations"
           value={usage.activeWorkflows}
@@ -125,9 +157,14 @@ function DashboardPage() {
         <StatCard
           label="Executions this month"
           value={usage.executionsThisMonth}
-          sub={`Limit: ${usage.limitMonthlyExecutions} per month`}
+          sub={`Limit ${usage.limitMonthlyExecutions} per month`}
         />
-        <StatCard label="Failed executions" value={usage.failedExecutionsThisMonth} sub="This month" tone="error" />
+        <StatCard
+          label="Failed executions"
+          value={failures}
+          sub={failures === 0 ? "No failures this month" : "Review them in Activity History"}
+          tone="error"
+        />
       </div>
 
       {usage.executionsThisMonth >= usage.limitMonthlyExecutions && (
@@ -135,13 +172,18 @@ function DashboardPage() {
           <AlertTriangle className="h-4 w-4" />
           <AlertTitle>Monthly execution limit reached</AlertTitle>
           <AlertDescription>
-            You've used all {usage.limitMonthlyExecutions} executions included in the {plan.name} plan. Upgrade on the Billing page for a higher allowance.
+            You've used all {usage.limitMonthlyExecutions} executions included in the {data.planName} plan. Manage your plan on the Billing page.
           </AlertDescription>
+          <div className="mt-3">
+            <Button size="sm" variant="outline" asChild>
+              <Link to="/billing">Open Billing</Link>
+            </Button>
+          </div>
         </Alert>
       )}
 
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* Recent automations */}
+        {/* Recent automations — the primary panel */}
         <Card className="lg:col-span-2">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-base">Recent automations</CardTitle>
@@ -165,9 +207,9 @@ function DashboardPage() {
                 key={wf.id}
                 to="/automations/$id"
                 params={{ id: wf.id }}
-                className="flex items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-sm hover:bg-accent/40"
+                className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2.5 text-sm transition-colors hover:bg-accent/50"
               >
-                <span className="flex h-8 w-8 items-center justify-center rounded-md bg-accent">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent">
                   <Sparkles className="h-4 w-4 text-primary" />
                 </span>
                 <span className="min-w-0 flex-1">
@@ -198,7 +240,7 @@ function DashboardPage() {
                 const status = data.integrations[i.key];
                 return (
                   <div key={i.key} className="flex items-center gap-3 rounded-lg border border-border px-3 py-2.5">
-                    <span className="flex h-9 w-9 items-center justify-center rounded-md bg-accent">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-accent">
                       <i.icon className="h-4.5 w-4.5 text-primary" />
                     </span>
                     <div className="min-w-0 flex-1">
@@ -231,7 +273,7 @@ function DashboardPage() {
               )}
               {data.recentExecutions.map((e) => (
                 <div key={e.id} className="flex items-center gap-2.5 text-xs">
-                  <span className={`flex h-6 w-6 items-center justify-center rounded-md ${
+                  <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${
                     e.status === "succeeded" ? "bg-success/15 text-success"
                     : e.status === "failed" ? "bg-error/15 text-error"
                     : "bg-warning/15 text-warning"
@@ -239,7 +281,7 @@ function DashboardPage() {
                     {e.status === "succeeded" ? <CheckCircle2 className="h-3.5 w-3.5" /> : e.status === "failed" ? <XCircle className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
                   </span>
                   <span className="min-w-0 flex-1 truncate">
-                    <Link to="/history" className="font-medium hover:underline">{e.workflowName}</Link>
+                    <Link to="/history" search={{ executionId: e.id }} className="font-medium hover:underline">{e.workflowName}</Link>
                     <span className="block text-muted-foreground">
                       {e.mode === "simulation" ? "Simulation" : "Live"} · {new Date(e.startedAt).toLocaleString()}
                     </span>
