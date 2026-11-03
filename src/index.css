@@ -1,0 +1,142 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-app text-ink antialiased;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: "cv11", "ss01";
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #cfd3e0 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #cfd3e0;
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid #635beb;
+  outline-offset: 2px;
+}
+
+@layer components {
+  .surface {
+    @apply rounded-xl border border-line bg-surface shadow-card;
+  }
+  .field {
+    @apply h-9 w-full rounded-lg border border-line bg-white px-3 text-sm text-ink placeholder:text-ink-secondary/70 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/15 disabled:bg-app disabled:text-ink-secondary;
+  }
+  .field-area {
+    @apply min-h-[84px] w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-secondary/70 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/15;
+  }
+  .label {
+    @apply mb-1.5 block text-[12px] font-medium text-ink;
+  }
+  .hint {
+    @apply mt-1 text-[11px] leading-relaxed text-ink-secondary;
+  }
+  .section-title {
+    @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-secondary;
+  }
+  .table-head {
+    @apply text-left text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-secondary;
+  }
+  .dot-grid {
+    background-color: #ffffff;
+    background-image: radial-gradient(circle, #d9dce8 1px, transparent 1px);
+    background-size: 18px 18px;
+  }
+}
+
+/* React Flow */
+.react-flow__node {
+  font-family: inherit;
+}
+.react-flow__handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #ffffff;
+  background: #b7b3f5;
+  box-shadow: 0 0 0 1px #d7d3fa;
+}
+.react-flow__handle:hover {
+  background: #635beb;
+}
+.react-flow__edge-path {
+  stroke: #b9bccb;
+  stroke-width: 1.6;
+}
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #635beb;
+  stroke-width: 2;
+}
+.react-flow__edge.animated .react-flow__edge-path {
+  stroke-dasharray: 5;
+  animation: dashdraw 0.6s linear infinite;
+}
+@keyframes dashdraw {
+  from {
+    stroke-dashoffset: 10;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.react-flow__attribution {
+  background: transparent;
+  font-size: 9px;
+  color: #a2a6b5;
+}
+.react-flow__minimap {
+  border-radius: 8px;
+  border: 1px solid #e5e7ef;
+  overflow: hidden;
+  background: #ffffff;
+}
+.react-flow__controls {
+  display: none;
+}
+.react-flow__selection {
+  background: rgba(99, 91, 235, 0.06);
+  border: 1px solid rgba(99, 91, 235, 0.35);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
