@@ -14,7 +14,7 @@
     "build": "npm run typecheck && npm run build:client && npm run build:server",
     "build:client": "vite build",
     "build:server": "node scripts/build-server.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
+    "typecheck": "tsc --noEmit -p tsconfig.flowmate.json && tsc --noEmit -p tsconfig.server.json",
     "start": "node --env-file-if-exists=.env dist/server.mjs",
     "db:seed": "tsx server/scripts/seed.ts",
     "db:reset": "tsx server/scripts/reset.ts"

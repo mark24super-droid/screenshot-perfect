@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/App.tsx",
+    "src/main.tsx",
+    "src/index.css",
+    "src/pages",
+    "src/features",
+    "src/context",
+    "src/components/ProtectedRoute.tsx",
+    "src/components/PublicLayout.tsx",
+    "src/components/auth",
+    "src/components/layout",
+    "src/components/settings",
+    "src/lib/api.ts",
+    "src/lib/icons.tsx",
+    "src/lib/timezones.ts",
+    "src/lib/types.ts",
+    "src/lib/utils.ts",
+    "shared",
+    "vite.config.ts"
+  ]
+}
